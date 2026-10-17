@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"></feGaussianBlur>
+      <feMerge>
+        <feMergeNode in="blur"></feMergeNode>
+        <feMergeNode in="SourceGraphic"></feMergeNode>
+      </feMerge>
+    </filter>
+    <radialGradient id="bg" cx="50%" cy="40%" r="60%">
+      <stop offset="0%" stop-color="#F5F0E6"></stop>
+      <stop offset="100%" stop-color="#EDE7D8"></stop>
+    </radialGradient>
+  </defs>
+
+  
+  <rect width="512" height="512" fill="url(#bg)"></rect>
+
+  
+  <g transform="translate(156, 52) scale(3.33)">
+    <path d="M30 38 C43 46,52 50,52 58 C52 64,38 66,30 66 C22 66,8 64,8 58 C8 52,17 46,30 38 C43 30,52 24,52 18 C52 12,38 10,30 10 C22 10,8 12,8 18 C8 24,17 30,30 38 Z" stroke="#C9A46A" stroke-width="3.5" stroke-opacity="0.25" fill="none" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"></path>
+    <path d="M30 38 C43 46,52 50,52 58 C52 64,38 66,30 66 C22 66,8 64,8 58 C8 52,17 46,30 38 C43 30,52 24,52 18 C52 12,38 10,30 10 C22 10,8 12,8 18 C8 24,17 30,30 38 Z" stroke="#A07040" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"></path>
+  </g>
+
+  
+  <text x="256" y="420" text-anchor="middle" font-family="&#39;Cormorant Garamond&#39;, &#39;Times New Roman&#39;, serif" font-size="60" font-weight="300" fill="#A07040" letter-spacing="14">Nodus</text>
+
+  
+  <text x="256" y="460" text-anchor="middle" font-family="&#39;Helvetica Neue&#39;, Helvetica, Arial, sans-serif" font-size="11" font-weight="400" fill="#A07040" fill-opacity="0.45" letter-spacing="4">ВАШИ ПЛАНЫ. СВЯЗАНЫ СО ВРЕМЕНЕМ.</text>
+</svg>
