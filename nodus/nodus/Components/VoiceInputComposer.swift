@@ -36,7 +36,7 @@ struct VoiceInputComposer: View {
 
     private var header: some View {
         VStack(spacing: 8) {
-            Text(language.localizedString(speech.isRecording ? "Listening" : (speech.isPreparing ? "Opening microphone" : "Voice note")))
+            Text(language.localizedString(speech.isRecording ? "Recording thoughts…" : (speech.isPreparing ? "Opening microphone" : "Voice note")))
                 .font(.cormorant(30, weight: .medium))
                 .foregroundStyle(NodusPalette.primary.opacity(0.96))
 
