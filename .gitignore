@@ -15,3 +15,6 @@ xcuserdata/
 # SwiftPM
 .build/
 .swiftpm/
+
+# codebase-memory-mcp local index
+.codebase-memory/
