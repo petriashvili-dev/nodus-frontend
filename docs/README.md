@@ -5,3 +5,4 @@
 | Файл | Содержание |
 |---|---|
 | [01-ai-access.md](01-ai-access.md) | доступ к AI-функциям по `user.features`, согласие, скрытие точек входа |
+| [02-api-and-account.md](02-api-and-account.md) | адрес сервера, API-клиент, токены и refresh, Keychain, регистрация устройства, профиль |

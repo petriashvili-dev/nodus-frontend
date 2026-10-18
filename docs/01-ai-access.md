@@ -18,7 +18,7 @@
 | `nodus/nodus/Models/AIAccess.swift` | `AIFeature` (ключи сервера) и `AIAccess` (набор функций + `consentAt`), разбор `features` |
 | `nodus/nodus/Services/AIAccessStore.swift` | последнее известное `AIAccess` в app group (`aiFeatures`, `aiConsentAt`); `apply(_:)` применяет изменения сразу, `load()` читает без main actor (для Siri-интента) |
 
-`AIAccessStore` создаётся в `ContentView` и передаётся на главный экран. Писать в него должен только серверный профиль (`GET /v1/me`, sync `entity_type: user`). Пока авторизации и sync в клиенте нет, хранилище пустое, и **все AI-точки входа скрыты у всех**.
+`AIAccessStore` создаётся в `AppServices` и передаётся на главный экран. Пишет в него только серверный профиль: `AccountService` после `GET /v1/me` при запуске и возврате в foreground (`docs/02-api-and-account.md`), позже — sync `entity_type: user`. До первого ответа сервера хранилище пустое, и AI-точки входа скрыты.
 
 ## Точки входа
 

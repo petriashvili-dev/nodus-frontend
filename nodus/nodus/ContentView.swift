@@ -6,7 +6,6 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var settingsStore = SettingsStore()
-    @StateObject private var aiAccessStore = AIAccessStore()
     @StateObject private var localizer = NodusLocalizer(language: .defaultValue)
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
     @AppStorage(
@@ -19,9 +18,11 @@ struct ContentView: View {
     @State private var notificationScheduler: NotificationScheduler?
     @State private var pendingDeepLink: URL?
 
+    let services: AppServices
     let notificationHandler: NotificationActionHandler
 
-    init(notificationHandler: NotificationActionHandler = NotificationActionHandler()) {
+    init(services: AppServices, notificationHandler: NotificationActionHandler = NotificationActionHandler()) {
+        self.services = services
         self.notificationHandler = notificationHandler
     }
 
@@ -43,7 +44,7 @@ struct ContentView: View {
                     HomeTimelineView(
                         viewModel: viewModel,
                         settingsStore: settingsStore,
-                        aiAccessStore: aiAccessStore,
+                        aiAccessStore: services.aiAccessStore,
                         visible: homeVisible,
                         openVoiceComposerFromControl: $openVoiceComposerFromControl
                     )
@@ -57,9 +58,12 @@ struct ContentView: View {
             configureIfNeeded()
             await playIntro()
         }
-        .onChange(of: scenePhase) { _, newPhase in
+        .onChange(of: scenePhase, initial: true) { _, newPhase in
             guard newPhase == .active else { return }
             viewModel?.load(rescheduleNotifications: false)
+            // Network never blocks the screen: the account catches up in
+            // the background and AI access follows the fresh profile.
+            Task { await services.account.refresh() }
         }
         .onOpenURL { url in
             guard url.scheme == "nodus" else { return }
@@ -208,5 +212,5 @@ private enum Phase {
 }
 
 #Preview {
-    ContentView()
+    ContentView(services: AppServices())
 }

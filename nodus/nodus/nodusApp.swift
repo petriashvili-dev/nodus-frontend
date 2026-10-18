@@ -29,6 +29,7 @@ final class NodusAppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct nodusApp: App {
     @UIApplicationDelegateAdaptor(NodusAppDelegate.self) private var appDelegate
+    private let services = AppServices()
 
     init() {
         FontRegistrar.registerCustomFontsIfNeeded()
@@ -45,7 +46,7 @@ struct nodusApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView(notificationHandler: appDelegate.notificationHandler)
+            ContentView(services: services, notificationHandler: appDelegate.notificationHandler)
         }
         .modelContainer(sharedModelContainer)
     }
