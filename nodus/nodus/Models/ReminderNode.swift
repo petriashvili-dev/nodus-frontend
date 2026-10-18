@@ -48,6 +48,9 @@ nonisolated final class ReminderNode {
     /// A local change the server rejected or that conflicts with someone
     /// else's; shown quietly on the card.
     var syncIssueRaw: String?
+    /// `[NodeMemberDTO]` as JSON: everyone the node is shared with,
+    /// including the owner.
+    var membersData: Data?
 
     init(
         id: UUID = UUID(),
@@ -99,6 +102,18 @@ nonisolated final class ReminderNode {
 
     var isShared: Bool {
         memberCount > 1
+    }
+
+    var members: [NodeMemberDTO] {
+        guard let membersData else { return [] }
+        return (try? APICoding.decoder.decode([NodeMemberDTO].self, from: membersData)) ?? []
+    }
+
+    /// Only the owner adds participants and deletes the node. A node the
+    /// server has not seen yet is the device owner's.
+    func isOwned(by userId: UUID?) -> Bool {
+        guard let ownerId else { return true }
+        return ownerId == userId
     }
 
     /// The zone to send to the server; knots predating the backend never

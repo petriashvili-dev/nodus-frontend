@@ -23,11 +23,7 @@ struct BackendIntegrationTests {
     }
 
     private func makeDevice(store: InMemorySecureStore) throws -> Device {
-        let schema = Schema([
-            ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self,
-            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self, AIDraftJob.self,
-        ])
-        let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        let container = try ModelContainer(for: NodusModelContainer.schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         let transport = URLSessionTransport()
         let session = AuthSession(configuration: configuration, transport: transport, store: store)
         let api = APIClient(configuration: configuration, transport: transport, session: session)
@@ -43,6 +39,62 @@ struct BackendIntegrationTests {
         let account = AccountService(api: device.api, session: device.session, store: store, aiAccessStore: AIAccessStore(defaults: UserDefaults(suiteName: UUID().uuidString)!))
         account.resetLocalData = { userId in try? await device.engine.wipeLocalData(for: userId) }
         return account
+    }
+
+    @Test func aSharedKnotConflictIsResolvedByChoice() async throws {
+        let ownerStore = InMemorySecureStore()
+        let friendStore = InMemorySecureStore()
+        let owner = try makeDevice(store: ownerStore)
+        let friend = try makeDevice(store: friendStore)
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        #expect(await friend.engine.runCycle(timeZone: zone) == .completed)
+        let ownerConnections = ConnectionsService(context: owner.context, api: owner.api, didEnqueue: {})
+        let friendConnections = ConnectionsService(context: friend.context, api: friend.api, didEnqueue: {})
+
+        // Invite by code, accept, confirm.
+        let invite = try await ownerConnections.createInvite()
+        let accepted = try await friendConnections.accept(code: invite.groupedCode)
+        #expect(accepted.status == "pending")
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        ownerConnections.reload()
+        let pending = try #require(ownerConnections.connections.first { $0.awaitingMyConfirmation })
+        try ownerConnections.confirm(pending)
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        #expect(await friend.engine.runCycle(timeZone: zone) == .completed)
+        friendConnections.reload()
+        #expect(friendConnections.active.count == 1)
+
+        // Share a knot; the friend gets it.
+        let dinner = try await owner.service.tie(
+            ReminderDraft(title: "Ужин", note: "", scheduledAt: Date().addingTimeInterval(5 * 3600).roundedToNearest5Minutes(), repeatSchedule: .none, leadTimes: []),
+            settings: .testDefault
+        )
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        ownerConnections.reload()
+        try ownerConnections.share(dinner, with: try #require(ownerConnections.active.first))
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        #expect(await friend.engine.runCycle(timeZone: zone) == .completed)
+        let shared = try #require(try friend.context.fetch(FetchDescriptor<ReminderNode>()).first { $0.id == dinner.id })
+        #expect(shared.isShared)
+        #expect(!shared.isOwned(by: try #require(try friendStore.loadSession()).tokens.userId))
+
+        // Both rename it at the same time: the friend's edit conflicts.
+        var ownerEdit = ReminderDraft(title: "Ужин в 19", note: "", scheduledAt: dinner.scheduledAt, repeatSchedule: .none, leadTimes: [])
+        ownerEdit.scheduledAt = dinner.scheduledAt
+        try await owner.service.update(node: dinner, with: ownerEdit, settings: .testDefault)
+        let friendEdit = ReminderDraft(title: "Ужин в 20", note: "", scheduledAt: shared.scheduledAt, repeatSchedule: .none, leadTimes: [])
+        try await friend.service.update(node: shared, with: friendEdit, settings: .testDefault)
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        #expect(await friend.engine.runCycle(timeZone: zone) == .completed)
+        #expect(shared.syncIssueRaw == "conflict")
+        #expect(shared.title == "Ужин в 19")
+
+        // "Keep mine" wins on the server and reaches the owner.
+        try friend.service.keepMine(node: shared)
+        #expect(shared.title == "Ужин в 20")
+        #expect(await friend.engine.runCycle(timeZone: zone) == .completed)
+        #expect(await owner.engine.runCycle(timeZone: zone) == .completed)
+        #expect(try owner.context.fetch(FetchDescriptor<ReminderNode>()).first { $0.id == dinner.id }?.title == "Ужин в 20")
     }
 
     /// Needs the backend started with `EmailOtp__ReviewEmails__0=review@nodus.test`

@@ -26,6 +26,13 @@ nonisolated final class OutboxOperation {
         case confirmAIDrafts
         case cancelAIDrafts
         case updateProfile
+        case confirmConnection
+        case removeConnection
+        case addMember
+        case removeMember
+        case markSuggestionShown
+        case acceptSuggestion
+        case dismissSuggestion
     }
 
     @Attribute(.unique) var id: UUID

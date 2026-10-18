@@ -24,6 +24,9 @@ protocol NodeRepositoryProtocol {
     /// Nodes whose template edit has not reached the server yet; the
     /// thread shows their local version until it has.
     func nodesWithUnsyncedTemplate() throws -> Set<UUID>
+    func operations(for entityId: UUID) throws -> [OutboxOperation]
+    func readySuggestion(sourceNodeId: UUID) throws -> Suggestion?
+    func markSuggestionShown(_ suggestion: Suggestion, at date: Date) throws
 }
 
 @MainActor
@@ -127,6 +130,33 @@ final class SwiftDataNodeRepository: NodeRepositoryProtocol {
 
     func fetchServerOccurrences() throws -> [ServerOccurrence] {
         try context.fetch(FetchDescriptor<ServerOccurrence>())
+    }
+
+    func operations(for entityId: UUID) throws -> [OutboxOperation] {
+        try context.fetch(FetchDescriptor<OutboxOperation>(
+            predicate: #Predicate { $0.entityId == entityId },
+            sortBy: [SortDescriptor(\.createdAt)]
+        ))
+    }
+
+    func readySuggestion(sourceNodeId: UUID) throws -> Suggestion? {
+        let ready = "ready"
+        let matches = try context.fetch(FetchDescriptor<Suggestion>(predicate: #Predicate {
+            $0.sourceNodeId == sourceNodeId && $0.statusRaw == ready && $0.shownAt == nil
+        }))
+        return matches.first
+    }
+
+    func markSuggestionShown(_ suggestion: Suggestion, at date: Date) throws {
+        suggestion.shownAt = date
+        enqueue(OutboxOperation(
+            kind: .markSuggestionShown,
+            method: .post,
+            path: "suggestions/\(suggestion.id.uuidString)/shown",
+            body: nil,
+            entityId: suggestion.id,
+            now: date
+        ))
     }
 
     func nodesWithUnsyncedTemplate() throws -> Set<UUID> {

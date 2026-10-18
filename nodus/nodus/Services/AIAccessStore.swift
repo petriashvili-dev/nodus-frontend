@@ -39,6 +39,8 @@ final class AIAccessStore: ObservableObject {
 
     private nonisolated enum Keys {
         static let features = "aiFeatures"
-        static let consentAt = "aiConsentAt"
+        // A separate key prevents consent values optimistically cached by
+        // older builds from being mistaken for a server-confirmed choice.
+        static let consentAt = "serverAIConsentAt"
     }
 }

@@ -48,6 +48,7 @@ final class HomeTimelineViewModel: ObservableObject {
     @Published var selectedItem: TimelineItem?
     @Published var isShowingEditor = false
     @Published var isShowingSettings = false
+    @Published var importJobToOpen: UUID?
     @Published var editingKnot: EditingKnot?
     @Published var retieTarget: TimelineItem?
     @Published var pauseTarget: TimelineItem?
@@ -56,6 +57,7 @@ final class HomeTimelineViewModel: ObservableObject {
     @Published var permissionPromptDraft: ReminderDraft?
     @Published var errorMessage: String?
     @Published var toast: ToastPresentation?
+    @Published var suggestionToPresent: Suggestion?
 
     /// How long a plain confirmation toast (tie/update/untie) stays up.
     static let toastDuration: Double = 2
@@ -117,6 +119,11 @@ final class HomeTimelineViewModel: ObservableObject {
         } catch {
             errorMessage = settingsStore.appLanguage.localizedString("Could not load the thread.")
         }
+    }
+
+    func openImportJob(_ id: UUID) {
+        importJobToOpen = id
+        isShowingSettings = true
     }
 
     /// Rebuilds only the in-memory presentation. Settings changes should be
@@ -193,20 +200,6 @@ final class HomeTimelineViewModel: ObservableObject {
 
     func node(for item: TimelineItem) -> ReminderNode? {
         cachedNodes.first { $0.id == item.nodeId }
-    }
-
-    func activeNodesArchive() throws -> NodusArchive {
-        let activeNodes = cachedNodes.filter { $0.status == .active }
-        return NodusArchive(nodes: activeNodes)
-    }
-
-    @discardableResult
-    func importArchive(_ archive: NodusArchive) throws -> Int {
-        let nodes = archive.makeNodes()
-        guard !nodes.isEmpty else { throw NodusArchiveError.empty }
-        try repository.saveNodes(nodes)
-        load(rescheduleNotifications: true)
-        return nodes.count
     }
 
     /// Builds an editable draft (title, note, type, date) from the node
@@ -351,11 +344,35 @@ final class HomeTimelineViewModel: ObservableObject {
     func untie(nodeId: UUID, occurrenceDate: Date?) async {
         guard let node = cachedNodes.first(where: { $0.id == nodeId }) else { return }
         do {
-            if let state = try await reminderService.untie(node: node, occurrenceDate: occurrenceDate) {
+            let outcome = try await reminderService.untie(node: node, occurrenceDate: occurrenceDate)
+            if let state = outcome.occurrenceState {
                 cache(state: state)
             }
+            suggestionToPresent = outcome.suggestion
             refreshPresentation(rescheduleNotifications: true)
             presentToast(settingsStore.appLanguage.localizedString("Knot untied."))
+        } catch {
+            errorMessage = settingsStore.appLanguage.localizedString("Could not tie the knot.")
+        }
+    }
+
+    func acceptSuggestion(_ suggestion: Suggestion, draft: ReminderDraft) async -> Bool {
+        do {
+            try await reminderService.accept(suggestion, with: draft, settings: settingsStore.snapshot)
+            suggestionToPresent = nil
+            refreshPresentation(rescheduleNotifications: true)
+            presentToast(settingsStore.appLanguage.localizedString("Knot tied."))
+            return true
+        } catch {
+            errorMessage = localizedMessage(for: error)
+            return false
+        }
+    }
+
+    func dismissSuggestion(_ suggestion: Suggestion) {
+        do {
+            try reminderService.dismiss(suggestion)
+            suggestionToPresent = nil
         } catch {
             errorMessage = settingsStore.appLanguage.localizedString("Could not tie the knot.")
         }
@@ -408,6 +425,20 @@ final class HomeTimelineViewModel: ObservableObject {
         } else {
             selectedItem = allItems.first { $0.nodeId == nodeId }
         }
+    }
+
+    func keepMine(_ node: ReminderNode) {
+        do {
+            try reminderService.keepMine(node: node)
+            load(rescheduleNotifications: true)
+        } catch {
+            errorMessage = localizedMessage(for: error)
+        }
+    }
+
+    func dismissSyncIssue(_ node: ReminderNode) {
+        try? reminderService.dismissSyncIssue(node: node)
+        refreshPresentation()
     }
 
     /// A push about a node: opens it if it is still here after sync.

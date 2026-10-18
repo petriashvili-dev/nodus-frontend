@@ -10,11 +10,7 @@ struct AIDraftsTests {
     private let defaults: UserDefaults
 
     init() throws {
-        let schema = Schema([
-            ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self,
-            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self, AIDraftJob.self,
-        ])
-        container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        container = try ModelContainer(for: NodusModelContainer.schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         defaults = try #require(UserDefaults(suiteName: "AIDraftsTests.\(UUID().uuidString)"))
     }
 
@@ -90,12 +86,12 @@ struct AIDraftsTests {
         #expect(await service.submit("Купить хлеб") == .needsConsent)
     }
 
-    @Test func grantingConsentIsOptimisticAndQueued() throws {
+    @Test func grantingConsentQueuesWithoutChangingServerAccess() throws {
         let (service, accessStore, _, _) = makeService(FakeTransport { _ in .json(200, "{}") }, access: AIAccess(features: [.drafts], consentAt: nil))
 
         try service.grantConsent()
 
-        #expect(accessStore.access.hasConsent)
+        #expect(!accessStore.access.hasConsent)
         let operations = try context.fetch(FetchDescriptor<OutboxOperation>())
         #expect(operations.map(\.kind) == [.setAIConsent])
         let body = try APICoding.decoder.decode(AIConsentBody.self, from: try #require(operations.first?.body))

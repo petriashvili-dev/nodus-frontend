@@ -54,6 +54,63 @@ final class ReminderService {
         return node
     }
 
+    func accept(_ suggestion: Suggestion, with draft: ReminderDraft, settings: SettingsSnapshot) async throws {
+        try validator.validate(draft)
+        let moment = now()
+        let node = ReminderNode(
+            title: draft.title.trimmingCharacters(in: .whitespacesAndNewlines),
+            note: draft.note.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            scheduledAt: draft.scheduledAt,
+            originDate: draft.repeatSchedule.isYearly ? draft.originDate : nil,
+            repeatSchedule: draft.repeatSchedule,
+            leadTimes: draft.leadTimes,
+            createdAt: moment,
+            updatedAt: moment
+        )
+        node.timeZoneIdentifier = TimeZone.current.identifier
+        // A negative version marks a local accepted suggestion so legacy
+        // node migration won't enqueue a separate create operation.
+        node.serverVersion = -1
+        let createBody = NodeMapper.createBody(id: node.id, fields: NodeMapper.LocalFields(
+            title: node.title,
+            note: node.note,
+            scheduledAt: node.scheduledAt,
+            originDate: node.originDate,
+            repeatSchedule: node.repeatSchedule,
+            timeZone: TimeZone(identifier: node.timeZoneIdentifier) ?? .current
+        ))
+        suggestion.statusRaw = "accepted"
+        suggestion.acceptedAt = moment
+        suggestion.linkedNodeId = node.id
+        repository.enqueue(OutboxOperation(
+            kind: .acceptSuggestion,
+            method: .post,
+            path: "suggestions/\(suggestion.id.uuidString)/accept",
+            body: try APICoding.encoder.encode(AcceptSuggestionBody(node: createBody)),
+            entityId: suggestion.id,
+            now: moment
+        ))
+        try repository.saveNode(node)
+        didEnqueue()
+        await notificationScheduler.schedule(node: node, occurrenceDate: nil, scheduledAt: nil, settings: settings)
+    }
+
+    func dismiss(_ suggestion: Suggestion) throws {
+        let moment = now()
+        suggestion.statusRaw = "dismissed"
+        suggestion.dismissedAt = moment
+        repository.enqueue(OutboxOperation(
+            kind: .dismissSuggestion,
+            method: .post,
+            path: "suggestions/\(suggestion.id.uuidString)/dismiss",
+            body: nil,
+            entityId: suggestion.id,
+            now: moment
+        ))
+        try repository.saveChanges()
+        didEnqueue()
+    }
+
     func update(node: ReminderNode, with draft: ReminderDraft, settings: SettingsSnapshot) async throws {
         try validator.validate(draft)
         node.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -70,8 +127,13 @@ final class ReminderService {
         await notificationScheduler.schedule(node: node, occurrenceDate: nil, scheduledAt: nil, settings: settings)
     }
 
+    struct UntieOutcome {
+        var occurrenceState: ReminderOccurrenceState?
+        var suggestion: Suggestion?
+    }
+
     @discardableResult
-    func untie(node: ReminderNode, occurrenceDate: Date?) async throws -> ReminderOccurrenceState? {
+    func untie(node: ReminderNode, occurrenceDate: Date?) async throws -> UntieOutcome {
         let completedAt = now()
         if node.isRepeating {
             // A recurring knot is never completed as a whole. Current
@@ -87,16 +149,20 @@ final class ReminderService {
             try repository.saveOccurrenceState(state)
             didEnqueue()
             await notificationScheduler.cancel(nodeId: node.id, occurrenceDate: occurrenceDate)
-            return state
+            return UntieOutcome(occurrenceState: state, suggestion: nil)
         } else {
             node.status = .completed
             node.completedAt = completedAt
             node.updatedAt = completedAt
             repository.enqueue(try untieOperation(nodeId: node.id, key: "once", completedAt: completedAt))
+            let suggestion = try repository.readySuggestion(sourceNodeId: node.id)
+            if let suggestion {
+                try repository.markSuggestionShown(suggestion, at: completedAt)
+            }
             try repository.saveChanges()
             didEnqueue()
             await notificationScheduler.cancel(nodeId: node.id, occurrenceDate: nil)
-            return nil
+            return UntieOutcome(occurrenceState: nil, suggestion: suggestion)
         }
     }
 
@@ -201,6 +267,56 @@ final class ReminderService {
         }
         try repository.deleteNode(node)
         didEnqueue()
+    }
+
+    // MARK: - Sync issues
+
+    /// "Keep mine" after someone else changed a shared knot: the user's edit
+    /// goes again, as a new operation, on top of the version they now saw.
+    func keepMine(node: ReminderNode) throws {
+        guard let blocked = try repository.operations(for: node.id).first(where: { $0.status == .blockedConflict }),
+              let body = blocked.body,
+              var update = try? APICoding.decoder.decode(UpdateNodeBody.self, from: body) else { return }
+        update.expectedVersion = nil
+        let operation = OutboxOperation(
+            kind: .updateNode, method: .patch, path: blocked.path,
+            body: try APICoding.encoder.encode(update), entityId: node.id,
+            needsExpectedVersion: true, now: now()
+        )
+        operation.expectedVersion = node.serverVersion
+        repository.deleteOperation(blocked)
+        repository.enqueue(operation)
+        // Show the user's version again until the server confirms it.
+        let decoded = NodeMapper.decode(NodeDTO(
+            id: node.id, type: Self.type(of: node), ownerId: node.ownerId ?? UUID(), title: update.title,
+            description: update.description, timezone: update.timezone, date: update.date, time: update.time,
+            scheduledAt: nil, recurrence: update.recurrence, trackYears: update.trackYears, version: node.serverVersion,
+            createdAt: node.createdAt, updatedAt: now(), members: nil, horizon: nil, occurrences: nil
+        ), now: now())
+        node.title = decoded.fields.title
+        node.note = decoded.fields.note
+        node.scheduledAt = decoded.fields.scheduledAt
+        node.originDate = decoded.fields.originDate
+        node.repeatSchedule = decoded.fields.repeatSchedule
+        node.syncIssueRaw = nil
+        try repository.saveChanges()
+        didEnqueue()
+    }
+
+    /// "Keep theirs": the server version stays, the user's edit is dropped.
+    /// For a rejected change it simply dismisses the notice.
+    func dismissSyncIssue(node: ReminderNode) throws {
+        for operation in try repository.operations(for: node.id) where operation.status == .blockedConflict || operation.status == .failed {
+            repository.deleteOperation(operation)
+        }
+        node.syncIssueRaw = nil
+        try repository.saveChanges()
+        didEnqueue()
+    }
+
+    private static func type(of node: ReminderNode) -> NodeType {
+        if !node.isRepeating { return .oneTime }
+        return node.originDate != nil && node.repeatSchedule == .every(1, .years) ? .anniversary : .recurring
     }
 
     // MARK: - Outbox operations

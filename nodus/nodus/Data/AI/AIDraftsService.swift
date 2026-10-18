@@ -55,10 +55,10 @@ final class AIDraftsService {
     }
 
     private func setConsent(_ granted: Bool) throws {
-        var access = aiAccessStore.access
-        access.consentAt = granted ? (access.consentAt ?? now()) : nil
-        aiAccessStore.apply(access)
-        // Only the latest choice matters; an unsent earlier one is replaced.
+        // Consent is server-owned. Do not change AIAccessStore until the
+        // successful response (or a later profile sync) confirms the choice.
+        // Only the latest unsent choice matters; sent requests keep their
+        // immutable body and idempotency key.
         let kind = OutboxOperation.Kind.setAIConsent.rawValue
         let unsent = try context.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.kindRaw == kind && !$0.hasBeenSent }))
         unsent.forEach(context.delete)
@@ -69,6 +69,18 @@ final class AIDraftsService {
         ))
         try context.save()
         didEnqueue()
+    }
+
+    var serverHasConsent: Bool { aiAccessStore.access.hasConsent }
+
+    /// Keeps a note locally when consent cannot be confirmed online. It is
+    /// not sent to the backend or an AI provider.
+    @discardableResult
+    func saveLocally(_ text: String, referenceTime: Date? = nil) -> UUID {
+        let job = AIDraftJob(transcript: text, timeZone: .current, referenceTime: referenceTime ?? now())
+        context.insert(job)
+        try? context.save()
+        return job.id
     }
 
     // MARK: - Submitting

@@ -53,6 +53,7 @@ struct ContentView: View {
                         aiDrafts: services.aiDrafts,
                         account: services.account,
                         appConfig: services.appConfig,
+                        connections: services.connections,
                         privacyPolicyURL: appConfig.config.privacyPolicyURL,
                         visible: homeVisible,
                         openVoiceComposerFromControl: $openVoiceComposerFromControl
@@ -95,6 +96,12 @@ struct ContentView: View {
             }
         }
         .onOpenURL { url in
+            // An invitation link (Universal Link) is handled as `nodus://invite/{token}`.
+            if url.scheme == "https", url.host == "nodus.app", url.pathComponents.dropFirst().first == "invite",
+               let token = url.pathComponents.dropFirst(2).first {
+                acceptInvite(token: token)
+                return
+            }
             guard url.scheme == "nodus" else { return }
             configureIfNeeded()
 
@@ -115,6 +122,10 @@ struct ContentView: View {
                 viewModel?.isShowingEditor = true
             case "voice":
                 openVoiceComposerFromControl = true
+            case "invite":
+                if let token = url.pathComponents.dropFirst().first {
+                    acceptInvite(token: token)
+                }
             case "node":
                 guard
                     let rawNodeID = url.pathComponents.dropFirst().first,
@@ -150,6 +161,21 @@ struct ContentView: View {
         }
     }
 
+    /// Accepting needs the network; the answer says what happened.
+    private func acceptInvite(token: String) {
+        let language = settingsStore.appLanguage
+        Task {
+            do {
+                let connection = try await services.connections.accept(token: token)
+                viewModel?.presentToast(InviteResult.message(for: connection, language: language))
+            } catch let error as ConnectionsService.InviteError {
+                viewModel?.presentToast(InviteResult.message(for: error, language: language))
+            } catch {
+                viewModel?.presentToast(language.localizedString("Something went wrong. Try again"))
+            }
+        }
+    }
+
     /// Remote notifications only after the user allowed notifications in
     /// context; a refusal blocks nothing (push only announces sync data).
     private func registerForPushIfAllowed() async {
@@ -181,9 +207,10 @@ struct ContentView: View {
         localizer.update(language: settingsStore.appLanguage)
 
         // Sync writes through its own context; screens re-read afterwards.
-        services.sync.onDataChanged = { [weak createdViewModel, aiDrafts = services.aiDrafts] in
+        services.sync.onDataChanged = { [weak createdViewModel, aiDrafts = services.aiDrafts, connections = services.connections] in
             createdViewModel?.load(rescheduleNotifications: true)
             aiDrafts.dataChanged()
+            connections.reload()
         }
         services.aiDrafts.toast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
         services.presentToast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
@@ -192,7 +219,8 @@ struct ContentView: View {
             sync: { [sync = services.sync] in await sync.syncNow() },
             toast: { [weak createdViewModel] in createdViewModel?.presentToast($0) },
             openDraftsReview: { [aiDrafts = services.aiDrafts] in aiDrafts.openJob(id: $0) },
-            openNode: { [weak createdViewModel] in createdViewModel?.openNode($0) ?? false }
+            openNode: { [weak createdViewModel] in createdViewModel?.openNode($0) ?? false },
+            openImport: { [weak createdViewModel] in createdViewModel?.openImportJob($0) }
         )
         notificationHandler.setPushHandler { [push = services.push] payload, isTap in
             if isTap {

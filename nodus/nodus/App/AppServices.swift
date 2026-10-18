@@ -20,6 +20,8 @@ final class AppServices {
     let sync: SyncCoordinator
     let aiDrafts: AIDraftsCoordinator
     let push = PushRouter()
+    let connections: ConnectionsService
+    let importExport: ImportExportService
     /// A short message on the current screen; set by `ContentView`.
     var presentToast: (String) -> Void = { _ in }
 
@@ -69,13 +71,23 @@ final class AppServices {
             onSignal: { Task { @MainActor in relay.syncSignal?() } }
         ))
 
-        aiDrafts = AIDraftsCoordinator(service: AIDraftsService(
+        aiDrafts = AIDraftsCoordinator(
+            service: AIDraftsService(
+                context: self.modelContainer.mainContext,
+                api: api,
+                aiAccessStore: aiAccessStore,
+                account: account,
+                didEnqueue: { [sync] in sync.localChangeQueued() }
+            ),
+            synchronize: { [sync] in await sync.syncNow() }
+        )
+
+        connections = ConnectionsService(
             context: self.modelContainer.mainContext,
             api: api,
-            aiAccessStore: aiAccessStore,
-            account: account,
             didEnqueue: { [sync] in sync.localChangeQueued() }
-        ))
+        )
+        importExport = ImportExportService(api: api, didChange: { [sync] in await sync.syncNow() })
 
         let mainContext = self.modelContainer.mainContext
         account.enqueue = { [sync] operation in

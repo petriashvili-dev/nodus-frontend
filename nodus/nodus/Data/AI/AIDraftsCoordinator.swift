@@ -22,12 +22,18 @@ final class AIDraftsCoordinator: ObservableObject {
     /// Brief messages on the thread (the toast of the current screen).
     var toast: (String) -> Void = { _ in }
     private let language: () -> AppLanguage
+    private let synchronize: () async -> Void
     private var textAwaitingConsent: String?
     private var readyJobIds: Set<UUID> = []
 
-    init(service: AIDraftsService, language: @escaping () -> AppLanguage = { .ru }) {
+    init(
+        service: AIDraftsService,
+        language: @escaping () -> AppLanguage = { .ru },
+        synchronize: @escaping () async -> Void = {}
+    ) {
         self.service = service
         self.language = language
+        self.synchronize = synchronize
         jobs = service.unfinishedJobs()
         readyJobIds = Set(jobs.filter { $0.status == .ready }.map(\.id))
     }
@@ -86,6 +92,20 @@ final class AIDraftsCoordinator: ObservableObject {
             try service.grantConsent()
         } catch {
             toast(string("This feature is currently unavailable."))
+            return
+        }
+        // The server profile is the only source of consent. The Outbox
+        // writes it first; only a confirmed profile may unlock the AI call.
+        await synchronize()
+        guard service.serverHasConsent else {
+            if let text = textAwaitingConsent {
+                service.saveLocally(text)
+                textAwaitingConsent = nil
+                refreshJobs()
+                toast(string("No connection. The note is saved in Drafts"))
+            } else {
+                toast(string("No connection"))
+            }
             return
         }
         guard let text = textAwaitingConsent else { return }

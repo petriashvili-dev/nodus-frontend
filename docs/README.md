@@ -11,3 +11,6 @@
 | [05-ai-drafts.md](05-ai-drafts.md) | голосовые AI-черновики: согласие, отправка, ожидание, проверка, «Черновики», Siri |
 | [06-account.md](06-account.md) | имя, сохранение и восстановление по email, «Сессия завершена», выход, удаление аккаунта |
 | [07-push.md](07-push.md) | APNs: регистрация, foreground-toast вместо баннера, маршрутизация нажатий, дедупликация |
+| [08-requirements-audit.md](08-requirements-audit.md) | проверенные пробелы относительно `03_Nodus_iOS_Requirements.md` |
+| [09-ai-continuations.md](09-ai-continuations.md) | предложения «Продолжение нити», показ и действия |
+| [10-import-export.md](10-import-export.md) | серверный экспорт, прямой и AI-импорт, проверка preview |

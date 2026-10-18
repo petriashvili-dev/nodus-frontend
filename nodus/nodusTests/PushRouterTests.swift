@@ -65,6 +65,19 @@ struct PushRouterTests {
         #expect(steps.values == ["sync", "sync", "open \(jobId)"])
     }
 
+    @Test func readyImportsOpenTheirPreviewAfterSync() async throws {
+        let importId = UUID()
+        let push = try #require(payload(kind: "import_ready", eventId: "e4", extra: ["import_id": importId.uuidString]))
+        let steps = Recorder<String>()
+        let router = PushRouter(log: PushEventLog(defaults: defaults))
+        router.destinations.sync = { steps.record("sync") }
+        router.destinations.openImport = { steps.record("open \($0)") }
+
+        await router.tapped(push)
+
+        #expect(steps.values == ["sync", "open \(importId)"])
+    }
+
     @Test func oldEventsAreForgottenAfterAWeek() {
         var now = Date(timeIntervalSince1970: 1_792_000_000)
         let log = PushEventLog(defaults: defaults, now: { now })

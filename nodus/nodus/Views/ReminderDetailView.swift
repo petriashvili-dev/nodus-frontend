@@ -67,6 +67,7 @@ extension Date {
 
 struct ReminderDetailView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
     let item: TimelineItem
     let untie: () async -> Void
     let tie: () async -> Void
@@ -74,10 +75,13 @@ struct ReminderDetailView: View {
     let delete: () -> Void
     let edit: () -> Void
     let quickPresetSettings: SettingsSnapshot
+    let sharing: NodeSharing?
+    @State private var isConfirmingLeave = false
 
     init(
         item: TimelineItem,
         quickPresetSettings: SettingsSnapshot,
+        sharing: NodeSharing? = nil,
         untie: @escaping () async -> Void,
         tie: @escaping () async -> Void,
         retie: @escaping (Date) async -> Void,
@@ -86,12 +90,15 @@ struct ReminderDetailView: View {
     ) {
         self.item = item
         self.quickPresetSettings = quickPresetSettings
+        self.sharing = sharing
         self.untie = untie
         self.tie = tie
         self.retie = retie
         self.delete = delete
         self.edit = edit
     }
+
+    private var language: AppLanguage { AppLanguage(locale: locale) }
 
     var body: some View {
         ZStack {
@@ -105,8 +112,14 @@ struct ReminderDetailView: View {
 
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 22) {
+                        if let sharing, sharing.syncIssue != nil {
+                            syncIssueBanner(sharing)
+                        }
                         summary
                         RetieSection(item: item, quickPresetSettings: quickPresetSettings, retie: retie, onComplete: { dismiss() })
+                        if let sharing, sharing.isShared || sharing.canShare {
+                            membersSection(sharing)
+                        }
                         actions
                     }
                     .padding(.horizontal, 24)
@@ -208,12 +221,121 @@ struct ReminderDetailView: View {
                 }
             }
 
-            NodusActionButton(title: "Delete", systemName: "trash", tone: .destructive) {
-                delete()
-                dismiss()
+            // Only the owner deletes a node; a participant can leave it.
+            if sharing?.isOwner ?? true {
+                NodusActionButton(title: "Delete", systemName: "trash", tone: .destructive) {
+                    delete()
+                    dismiss()
+                }
+            } else if let sharing {
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Leave the knot")), systemName: "rectangle.portrait.and.arrow.right", tone: .destructive) {
+                    isConfirmingLeave = true
+                }
+                .alert(language.localizedString("Leave the knot?"), isPresented: $isConfirmingLeave) {
+                    Button(language.localizedString("Leave"), role: .destructive) {
+                        sharing.leave()
+                        dismiss()
+                    }
+                    Button(language.localizedString("Cancel"), role: .cancel) {}
+                } message: {
+                    Text(language.localizedString("It will disappear from your thread. The others keep it."))
+                }
             }
         }
     }
+
+    // MARK: - Sharing
+
+    private func membersSection(_ sharing: NodeSharing) -> some View {
+        NodusSheetSection(title: LocalizedStringKey(language.localizedString("Participants"))) {
+            ForEach(sharing.members, id: \.userId) { member in
+                HStack {
+                    Text(memberName(member, sharing: sharing))
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(NodusPalette.primary.opacity(0.86))
+                    Spacer()
+                    if sharing.isOwner, member.userId != sharing.currentUserId {
+                        Button {
+                            sharing.removeMember(member.userId)
+                        } label: {
+                            Image(systemName: "minus.circle")
+                                .foregroundStyle(NodusPalette.secondary.opacity(0.6))
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(String(format: language.localizedString("Remove %@"), memberName(member, sharing: sharing)))
+                    }
+                }
+            }
+            if sharing.canShare {
+                Menu {
+                    ForEach(sharing.shareCandidates) { connection in
+                        Button(connection.displayName ?? language.localizedString("No name")) {
+                            sharing.share(connection)
+                        }
+                    }
+                } label: {
+                    Label(language.localizedString("Share the knot"), systemImage: "person.badge.plus")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color(hex: 0xF5D7A8))
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                        .background(NodusPalette.accent.opacity(0.16), in: Capsule(style: .continuous))
+                        .overlay { Capsule(style: .continuous).stroke(NodusPalette.accent.opacity(0.34), lineWidth: 1) }
+                }
+            }
+        }
+    }
+
+    private func memberName(_ member: NodeMemberDTO, sharing: NodeSharing) -> String {
+        if member.userId == sharing.currentUserId { return language.localizedString("You") }
+        let name = member.displayName ?? language.localizedString("No name")
+        return member.userId == sharing.ownerId ? "\(name) · \(language.localizedString("owner"))" : name
+    }
+
+    /// A shared knot changed by someone else while this edit was on its way,
+    /// or a change the server refused. Never resolved silently.
+    private func syncIssueBanner(_ sharing: NodeSharing) -> some View {
+        NodusSheetSection {
+            Text(language.localizedString(sharing.syncIssue == "conflict" ? "Someone else changed this knot" : "This change was not saved on the server"))
+                .font(.cormorant(18, weight: .regular))
+                .foregroundStyle(Color(hex: 0xD8A48F).opacity(0.95))
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if sharing.syncIssue == "conflict" {
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Keep mine")), systemName: "person", tone: .primary) {
+                    sharing.keepMine()
+                    dismiss()
+                }
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Keep theirs")), systemName: "person.2") {
+                    sharing.keepTheirs()
+                    dismiss()
+                }
+            } else {
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Got it")), systemName: "checkmark") {
+                    sharing.keepTheirs()
+                }
+            }
+        }
+    }
+}
+
+/// Who a knot is shared with and what this user may do about it.
+struct NodeSharing {
+    var members: [NodeMemberDTO]
+    var ownerId: UUID?
+    var currentUserId: UUID?
+    var isOwner: Bool
+    /// Active connections not yet on the knot (owner only).
+    var shareCandidates: [Connection]
+    /// `conflict` or `rejected` (see `ReminderNode.syncIssueRaw`).
+    var syncIssue: String?
+    var share: (Connection) -> Void
+    var removeMember: (UUID) -> Void
+    var leave: () -> Void
+    var keepMine: () -> Void
+    var keepTheirs: () -> Void
+
+    var isShared: Bool { members.count > 1 }
+    var canShare: Bool { isOwner && !shareCandidates.isEmpty }
 }
 
 /// The retie controls (common quick presets + a custom relative offset + the

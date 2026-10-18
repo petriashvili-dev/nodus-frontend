@@ -12,11 +12,7 @@ struct SyncEngineTests {
     private let store: InMemorySecureStore
 
     init() throws {
-        let schema = Schema([
-            ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self,
-            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self, AIDraftJob.self,
-        ])
-        container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
+        container = try ModelContainer(for: NodusModelContainer.schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         store = InMemorySecureStore(session: Fixtures.session(access: "a", refresh: "r", expiresAt: clock.now.addingTimeInterval(3600)))
     }
 
@@ -58,6 +54,105 @@ struct SyncEngineTests {
         let body = try APICoding.decoder.decode(CreateNodeBody.self, from: try #require(queued.first?.body))
         #expect(body.id == node.id)
         #expect(body.type == .oneTime)
+    }
+
+    @Test func oneTimeUntieMarksReadySuggestionShownInSameOutboxTransaction() async throws {
+        let node = try await makeService().tie(draft("Позвонить"), settings: .testDefault)
+        let suggestion = Suggestion(SuggestionDTO(
+            id: UUID(), sourceNodeId: node.id, status: "ready", title: "Записаться к врачу",
+            description: nil, shownAt: nil, acceptedAt: nil, dismissedAt: nil,
+            linkedNodeId: nil, version: 1
+        ))
+        context.insert(suggestion)
+        try context.save()
+
+        let outcome = try await makeService().untie(node: node, occurrenceDate: nil)
+
+        #expect(outcome.suggestion?.id == suggestion.id)
+        #expect(suggestion.shownAt == clock.now)
+        let queued = try operations()
+        #expect(queued.contains { $0.kind == .untie })
+        #expect(queued.contains { $0.kind == .markSuggestionShown && $0.entityId == suggestion.id })
+    }
+
+    @Test func acceptingSuggestionQueuesOnlyCompositeAcceptOperation() async throws {
+        let source = try await makeService().tie(draft("Позвонить"), settings: .testDefault)
+        let suggestion = Suggestion(SuggestionDTO(
+            id: UUID(), sourceNodeId: source.id, status: "ready", title: "Записаться к врачу",
+            description: nil, shownAt: clock.now, acceptedAt: nil, dismissedAt: nil,
+            linkedNodeId: nil, version: 1
+        ))
+        context.insert(suggestion)
+        try context.save()
+        let newDraft = draft("Записаться к врачу", in: 48)
+
+        try await makeService().accept(suggestion, with: newDraft, settings: .testDefault)
+
+        let queued = try operations().filter { $0.entityId != source.id }
+        #expect(queued.count == 1)
+        #expect(queued[0].kind == .acceptSuggestion)
+        let body = try APICoding.decoder.decode(AcceptSuggestionBody.self, from: try #require(queued[0].body))
+        #expect(body.node.title == newDraft.title)
+        #expect(body.node.id != source.id)
+        #expect(try context.fetch(FetchDescriptor<ReminderNode>()).contains { $0.serverVersion == -1 })
+    }
+
+    @Test func dismissingSuggestionQueuesDismissAndChangesLocalStateTogether() async throws {
+        let source = try await makeService().tie(draft("Исходный"), settings: .testDefault)
+        let suggestion = Suggestion(SuggestionDTO(
+            id: UUID(), sourceNodeId: source.id, status: "ready", title: "Следующий шаг",
+            description: nil, shownAt: clock.now, acceptedAt: nil, dismissedAt: nil,
+            linkedNodeId: nil, version: 1
+        ))
+        context.insert(suggestion)
+        try context.save()
+
+        try makeService().dismiss(suggestion)
+
+        #expect(suggestion.statusRaw == "dismissed")
+        #expect(try operations().contains { $0.kind == .dismissSuggestion && $0.entityId == suggestion.id })
+    }
+
+    @Test func retryingFailedOutboxUsesANewIdempotencyKey() async throws {
+        let node = try await makeService().tie(draft("Повторить"), settings: .testDefault)
+        let oldOperation = try #require(try operations().first)
+        let oldKey = oldOperation.idempotencyKey
+        oldOperation.status = .failed
+        oldOperation.lastErrorCode = "validation_failed"
+        try context.save()
+
+        try await makeEngine(FakeTransport { _ in .json(200, "{}") }).retryFailedOperation(oldOperation.id)
+
+        let retried = try #require(try operations().first)
+        #expect(retried.idempotencyKey != oldKey)
+        #expect(retried.status == .pending)
+        #expect(retried.entityId == node.id)
+    }
+
+    @Test func cancellingFailedCreateRemovesOptimisticNodeAndOperation() async throws {
+        _ = try await makeService().tie(draft("Отменить"), settings: .testDefault)
+        let operation = try #require(try operations().first)
+        operation.status = .failed
+        operation.lastErrorCode = "validation_failed"
+        try context.save()
+
+        try await makeEngine(FakeTransport { _ in .json(200, "{}") }).cancelFailedOperation(operation.id)
+
+        #expect(try context.fetch(FetchDescriptor<ReminderNode>()).isEmpty)
+        #expect(try operations().isEmpty)
+    }
+
+    @Test func retryDoesNotResendUnavailableAIFeature() async throws {
+        _ = try await makeService().tie(draft("AI"), settings: .testDefault)
+        let operation = try #require(try operations().first)
+        operation.status = .failed
+        operation.lastErrorCode = "feature_not_available"
+        try context.save()
+
+        try await makeEngine(FakeTransport { _ in .json(500, "{}") }).retryFailedOperation(operation.id)
+
+        #expect(try operations().first?.id == operation.id)
+        #expect(try operations().first?.status == .failed)
     }
 
     @Test func offlineEditsOfAnUnsentKnotCollapseIntoItsCreate() async throws {
@@ -188,6 +283,8 @@ struct SyncEngineTests {
     @Test func deltaSyncAppliesChangesAndTheCursorTogether() async throws {
         let kept = UUID()
         let removed = UUID()
+        let suggestionId = UUID()
+        let importId = UUID()
         let gone = ReminderNode(id: removed, title: "Удалят", scheduledAt: clock.now)
         gone.serverVersion = 1
         context.insert(gone)
@@ -201,8 +298,10 @@ struct SyncEngineTests {
             {"changes":[
               {"revision":11,"entity_type":"node","entity_id":"\(kept.uuidString)","operation":"upsert","version":1,"data":\(Self.nodeJSON(id: kept, title: "Новый", version: 1))},
               {"revision":12,"entity_type":"node","entity_id":"\(removed.uuidString)","operation":"delete","version":2,"data":null},
-              {"revision":13,"entity_type":"something_new","entity_id":"x","operation":"upsert","version":1,"data":{"a":1}}
-            ],"next_cursor":13,"has_more":false}
+              {"revision":13,"entity_type":"suggestion","entity_id":"\(suggestionId.uuidString)","operation":"upsert","version":1,"data":{"id":"\(suggestionId.uuidString)","source_node_id":"\(kept.uuidString)","status":"ready","title":"Следующий шаг","description":null,"shown_at":null,"accepted_at":null,"dismissed_at":null,"linked_node_id":null,"version":1}},
+              {"revision":14,"entity_type":"import_job","entity_id":"\(importId.uuidString)","operation":"upsert","version":1,"data":{"id":"\(importId.uuidString)","status":"ready","file_name":"todo.csv","version":1,"preview":[{"index":0,"type":"one_time","title":"Купить цветы"}],"preview_issues":[]}},
+              {"revision":15,"entity_type":"something_new","entity_id":"x","operation":"upsert","version":1,"data":{"a":1}}
+            ],"next_cursor":15,"has_more":false}
             """)
         }
         try await makeEngine(transport).pull()
@@ -210,7 +309,9 @@ struct SyncEngineTests {
         let nodes = try context.fetch(FetchDescriptor<ReminderNode>())
         #expect(nodes.map(\.id) == [kept])
         #expect(nodes.first?.title == "Новый")
-        #expect(try context.fetch(FetchDescriptor<SyncMetadata>()).first?.cursor == 13)
+        #expect(try context.fetch(FetchDescriptor<SyncMetadata>()).first?.cursor == 15)
+        #expect(try context.fetch(FetchDescriptor<Suggestion>()).first?.title == "Следующий шаг")
+        #expect(try context.fetch(FetchDescriptor<ImportJob>()).first?.fileName == "todo.csv")
     }
 
     @Test func aPendingLocalEditStaysOnTopOfIncomingServerData() async throws {

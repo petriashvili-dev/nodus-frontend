@@ -92,6 +92,28 @@ final class SyncCoordinator {
         await cycleTask?.value
     }
 
+    func failedOperations() async -> [SyncEngine.FailedOperation] {
+        (try? await engine.failedOperations()) ?? []
+    }
+
+    func retryFailedOperation(_ id: UUID) async {
+        do {
+            try await engine.retryFailedOperation(id)
+            requestSync()
+        } catch {
+            logger.error("Could not retry failed Outbox operation")
+        }
+    }
+
+    func cancelFailedOperation(_ id: UUID) async {
+        do {
+            try await engine.cancelFailedOperation(id)
+            requestSync()
+        } catch {
+            logger.error("Could not cancel failed Outbox operation")
+        }
+    }
+
     private func runCycles() async {
         repeat {
             needsAnotherCycle = false

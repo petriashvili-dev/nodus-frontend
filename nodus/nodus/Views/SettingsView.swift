@@ -1,29 +1,40 @@
 import SwiftUI
+import UniformTypeIdentifiers
+import SwiftData
 
 struct SettingsView: View {
     private enum Destination: String, Identifiable, Equatable {
-        case account, notifications, thread, app, archive, drafts
+        case account, connections, notifications, thread, app, archive, drafts, syncIssues
 
         var id: String { rawValue }
     }
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: \ImportJob.createdAt, order: .reverse) private var importJobs: [ImportJob]
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: HomeTimelineViewModel
     @ObservedObject var aiAccessStore: AIAccessStore
     @ObservedObject var aiDrafts: AIDraftsCoordinator
     @ObservedObject var account: AccountService
     @ObservedObject var appConfig: AppConfigStore
+    @ObservedObject var connections: ConnectionsService
+    let privacyPolicyURL: URL
     @State private var emailSheet: EmailCodeSheet.Mode?
     @State private var displayName = ""
     @State private var isConfirmingSignOut = false
     @State private var isConfirmingDeletion = false
     @State private var reviewingJob: AIDraftJob?
+    @State private var reviewingImportJob: ImportJob?
     @State private var manualDraftJob: AIDraftJob?
     @State private var destination: Destination?
-    @State private var archiveForExport: NodusArchive?
+    @State private var archiveForExport: TransferDocument?
+    @State private var exportFilename = "nodus-export.json"
     @State private var isExportingArchive = false
     @State private var isImportingArchive = false
+    @State private var isShowingImportConsent = false
+    @State private var pendingAIImport: (Data, String)?
+    @State private var failedOperations: [SyncEngine.FailedOperation] = []
     @State private var editingPausedKnot: PausedKnot?
 
     var body: some View {
@@ -58,6 +69,11 @@ struct SettingsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: destination)
+        .onChange(of: viewModel.importJobToOpen) { _, id in
+            guard let id else { return }
+            reviewingImportJob = importJobs.first { $0.id == id }
+            viewModel.importJobToOpen = nil
+        }
         .sheet(item: $reviewingJob) { job in
             AIDraftsReviewView(
                 job: job,
@@ -77,6 +93,18 @@ struct SettingsView: View {
                 aiDrafts.remove(job)
                 manualDraftJob = nil
             }
+        }
+        .sheet(item: $reviewingImportJob) { job in
+            ImportJobReviewView(
+                job: job,
+                language: settings.appLanguage,
+                confirm: { indexes in
+                    try await confirmImport(job, indexes: indexes)
+                },
+                cancelJob: {
+                    try await cancelImport(job)
+                }
+            )
         }
         .sheet(item: Binding(
             get: { emailSheet.map(EmailSheetItem.init) },
@@ -114,26 +142,47 @@ struct SettingsView: View {
                 await viewModel.pause(nodeId: knot.nodeId, until: date)
             }
         }
+        .sheet(isPresented: $isShowingImportConsent) {
+            AIConsentView(
+                language: settings.appLanguage,
+                privacyPolicyURL: privacyPolicyURL,
+                allow: {
+                    await aiDrafts.consentGranted()
+                    isShowingImportConsent = false
+                    guard let pendingAIImport else { return }
+                    self.pendingAIImport = nil
+                    if aiDrafts.service.serverHasConsent {
+                        await sendImport(pendingAIImport.0, fileName: pendingAIImport.1)
+                    } else {
+                        viewModel.presentToast(settings.appLanguage.localizedString("No connection: consent was not saved on the server."))
+                    }
+                },
+                decline: {
+                    pendingAIImport = nil
+                    isShowingImportConsent = false
+                }
+            )
+        }
         .fileExporter(
             isPresented: $isExportingArchive,
             document: archiveForExport,
-            contentType: .nodusArchive,
-            defaultFilename: "Nodus-\(Self.archiveDateFormatter.string(from: Date()))"
+            contentType: .json,
+            defaultFilename: exportFilename
         ) { result in
             archiveForExport = nil
             switch result {
             case .success:
-                viewModel.presentToast("Активные узлы экспортированы.")
+                viewModel.presentToast(settings.appLanguage.localizedString("Active knots exported."))
             case let .failure(error):
-                viewModel.presentToast("Не удалось экспортировать: \(error.localizedDescription)")
+                viewModel.presentToast(format("Could not export: %@", error.localizedDescription))
             }
         }
-        .fileImporter(isPresented: $isImportingArchive, allowedContentTypes: [.nodusArchive]) { result in
+        .fileImporter(isPresented: $isImportingArchive, allowedContentTypes: importFileTypes) { result in
             switch result {
             case let .success(url):
                 importArchive(from: url)
             case let .failure(error):
-                viewModel.presentToast("Не удалось открыть файл: \(error.localizedDescription)")
+                viewModel.presentToast(format("Could not open file: %@", error.localizedDescription))
             }
         }
         .presentationDetents([.large])
@@ -170,11 +219,13 @@ struct SettingsView: View {
     private var destinationTitle: String? {
         switch destination {
         case .account: settings.appLanguage.localizedString("Account")
+        case .connections: settings.appLanguage.localizedString("Connections")
         case .notifications: settings.appLanguage.localizedString("Notifications")
         case .thread: settings.appLanguage.localizedString("Thread")
         case .app: "Приложение"
         case .archive: "Импорт и экспорт"
         case .drafts: settings.appLanguage.localizedString("Drafts")
+        case .syncIssues: settings.appLanguage.localizedString("Sync problems")
         case nil: nil
         }
     }
@@ -185,6 +236,10 @@ struct SettingsView: View {
                 SettingsMenuRow(title: settings.appLanguage.localizedString("Account")) {
                     displayName = account.profile?.displayName ?? ""
                     destination = .account
+                }
+
+                SettingsMenuRow(title: settings.appLanguage.localizedString("Connections")) {
+                    destination = .connections
                 }
 
                 SettingsMenuRow(title: settings.appLanguage.localizedString("Notifications")) {
@@ -201,6 +256,11 @@ struct SettingsView: View {
 
                 SettingsMenuRow(title: "Импорт и экспорт") {
                     destination = .archive
+                }
+
+                SettingsMenuRow(title: settings.appLanguage.localizedString("Sync problems")) {
+                    destination = .syncIssues
+                    refreshFailedOperations()
                 }
 
                 // Drafts stay reachable for unfinished jobs even after the
@@ -227,6 +287,13 @@ struct SettingsView: View {
                 switch destination {
                 case .account:
                     accountSection
+                case .connections:
+                    ConnectionsSection(
+                        connections: connections,
+                        account: account,
+                        language: settings.appLanguage,
+                        toast: { viewModel.presentToast($0) }
+                    )
                 case .notifications:
                     notificationsSection
                 case .thread:
@@ -237,6 +304,8 @@ struct SettingsView: View {
                     archiveSection
                 case .drafts:
                     draftsSection
+                case .syncIssues:
+                    syncIssuesSection
                 }
             }
             .padding(.horizontal, 24)
@@ -399,7 +468,131 @@ struct SettingsView: View {
     }
 
     private var archiveSection: some View {
-        archiveActions
+        VStack(spacing: 18) {
+            archiveActions
+            ForEach(importJobs.filter { ["queued", "processing", "ready", "failed", "expired", "completed"].contains($0.statusRaw) }) { job in
+                ArchiveTransferRow(
+                    title: job.fileName ?? settings.appLanguage.localizedString("Imported file"),
+                    detail: settings.appLanguage.localizedString(importJobStatusKey(job.statusRaw))
+                ) {
+                    reviewingImportJob = job
+                }
+            }
+        }
+    }
+
+    private var syncIssuesSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if failedOperations.isEmpty {
+                Text(settings.appLanguage.localizedString("Everything is synchronized"))
+                    .font(.system(size: 15))
+                    .foregroundStyle(NodusPalette.secondary)
+            } else {
+                ForEach(failedOperations) { operation in
+                    NodusSheetSection(title: LocalizedStringKey(operationTitle(operation.kind))) {
+                        if let code = operation.errorCode {
+                            Text(code)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(NodusPalette.secondary)
+                        }
+                        HStack(spacing: 12) {
+                            if operation.errorCode != "feature_not_available" && operation.errorCode != "ai_consent_required" {
+                                Button(settings.appLanguage.localizedString("Retry")) {
+                                    Task {
+                                        await AppServices.shared.sync.retryFailedOperation(operation.id)
+                                        refreshFailedOperations()
+                                    }
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(NodusPalette.accent)
+                            }
+
+                            Button(settings.appLanguage.localizedString("Cancel operation"), role: .destructive) {
+                                Task {
+                                    await AppServices.shared.sync.cancelFailedOperation(operation.id)
+                                    refreshFailedOperations()
+                                }
+                            }
+                            .buttonStyle(.bordered)
+                            .tint(NodusPalette.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .task { refreshFailedOperations() }
+    }
+
+    private func refreshFailedOperations() {
+        Task { failedOperations = await AppServices.shared.sync.failedOperations() }
+    }
+
+    @MainActor
+    private func confirmImport(_ job: ImportJob, indexes: [Int]) async throws {
+        let frozenIndexes = job.pendingConfirmIndexes ?? indexes
+        let key = try job.prepareConfirm(indexes: frozenIndexes)
+        try modelContext.save()
+        do {
+            try await AppServices.shared.importExport.confirm(job.id, indexes: frozenIndexes, idempotencyKey: key)
+            job.pendingConfirmKey = nil
+            job.pendingConfirmIndexesData = nil
+            try modelContext.save()
+            reviewingImportJob = nil
+            viewModel.presentToast(settings.appLanguage.localizedString("Import complete."))
+        } catch {
+            if (error as? APIError)?.isRetryableWithSameKey != true {
+                job.pendingConfirmKey = nil
+                job.pendingConfirmIndexesData = nil
+                try? modelContext.save()
+            }
+            throw error
+        }
+    }
+
+    @MainActor
+    private func cancelImport(_ job: ImportJob) async throws {
+        let key = job.prepareCancel()
+        try modelContext.save()
+        do {
+            try await AppServices.shared.importExport.cancel(job.id, idempotencyKey: key)
+            job.pendingCancelKey = nil
+            try modelContext.save()
+            reviewingImportJob = nil
+        } catch {
+            if (error as? APIError)?.isRetryableWithSameKey != true {
+                job.pendingCancelKey = nil
+                try? modelContext.save()
+            }
+            throw error
+        }
+    }
+
+    private func operationTitle(_ kind: String) -> String {
+        switch kind {
+        case OutboxOperation.Kind.createNode.rawValue, OutboxOperation.Kind.updateNode.rawValue,
+             OutboxOperation.Kind.deleteNode.rawValue:
+            "Knot change"
+        case OutboxOperation.Kind.untie.rawValue, OutboxOperation.Kind.retie.rawValue:
+            "Knot state"
+        case OutboxOperation.Kind.confirmAIDrafts.rawValue, OutboxOperation.Kind.cancelAIDrafts.rawValue:
+            "AI drafts"
+        case OutboxOperation.Kind.acceptSuggestion.rawValue, OutboxOperation.Kind.dismissSuggestion.rawValue,
+             OutboxOperation.Kind.markSuggestionShown.rawValue:
+            "Thread suggestion"
+        default:
+            "Account change"
+        }
+    }
+
+    private func importJobStatusKey(_ status: String) -> String {
+        switch status {
+        case "queued", "processing": "Import is being processed"
+        case "ready": "Review import"
+        case "failed": "Import failed"
+        case "expired": "Preview expired"
+        case "completed": "Import complete."
+        default: status
+        }
     }
 
     private var archiveActions: some View {
@@ -456,11 +649,15 @@ struct SettingsView: View {
     }
 
     private func exportArchive() {
-        do {
-            archiveForExport = try viewModel.activeNodesArchive()
-            isExportingArchive = true
-        } catch {
-            viewModel.presentToast("Не удалось подготовить экспорт: \(error.localizedDescription)")
+        Task {
+            do {
+                let file = try await AppServices.shared.importExport.export()
+                archiveForExport = TransferDocument(data: file.data)
+                exportFilename = file.fileName
+                isExportingArchive = true
+            } catch {
+                viewModel.presentToast(format("Could not export: %@", error.localizedDescription))
+            }
         }
     }
 
@@ -473,19 +670,68 @@ struct SettingsView: View {
         }
 
         do {
-            let document = try NodusArchive(fileData: Data(contentsOf: url))
-            let importedCount = try viewModel.importArchive(document)
-            viewModel.presentToast("Импортировано узлов: \(importedCount).")
+            let data = try Data(contentsOf: url)
+            guard let content = String(data: data, encoding: .utf8) else {
+                viewModel.presentToast(settings.appLanguage.localizedString("Choose a text file."))
+                return
+            }
+            let isNodusFile = isRecognizedNodusFile(data)
+            let maxChars = !isNodusFile && aiAccessStore.access.isAvailable(.fileImport)
+                ? appConfig.config.limits.importAIMaxChars
+                : appConfig.config.limits.importMaxChars
+            guard content.count <= maxChars else {
+                viewModel.presentToast(settings.appLanguage.localizedString("The file is too large to import."))
+                return
+            }
+            if !isNodusFile, aiAccessStore.access.isAvailable(.fileImport), !aiAccessStore.access.hasConsent {
+                pendingAIImport = (data, url.lastPathComponent)
+                isShowingImportConsent = true
+                return
+            }
+            Task { await sendImport(data, fileName: url.lastPathComponent) }
         } catch {
-            viewModel.presentToast("Не удалось импортировать файл: \(error.localizedDescription)")
+            viewModel.presentToast(format("Could not import file: %@", error.localizedDescription))
         }
     }
 
-    private static let archiveDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter
-    }()
+    private var importFileTypes: [UTType] {
+        aiAccessStore.access.isAvailable(.fileImport)
+            ? [.json, .plainText, .commaSeparatedText]
+            : [.json]
+    }
+
+    private func isRecognizedNodusFile(_ data: Data) -> Bool {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object["source"] as? String == "nodus"
+    }
+
+    @MainActor
+    private func sendImport(_ data: Data, fileName: String) async {
+        do {
+            let response = try await AppServices.shared.importExport.importFile(
+                data: data,
+                fileName: fileName,
+                timezone: TimeZone.current.identifier
+            )
+            switch response.mode {
+            case "direct":
+                viewModel.presentToast(String(format: settings.appLanguage.localizedString("Imported knots: %lld."), response.result?.createdNodes ?? 0))
+            case "ai":
+                viewModel.presentToast(settings.appLanguage.localizedString("File received. The preview will appear when processing is complete."))
+            default:
+                viewModel.presentToast(settings.appLanguage.localizedString("Could not read the import result."))
+            }
+        } catch let error as APIError where error.code == "feature_not_available" {
+            viewModel.presentToast(settings.appLanguage.localizedString("Only files exported from Nodus can be imported without AI."))
+        } catch {
+            viewModel.presentToast(format("Could not import file: %@", error.localizedDescription))
+        }
+    }
+
+    private func format(_ key: String, _ value: String) -> String {
+        String(format: settings.appLanguage.localizedString(key), value)
+    }
+
 }
 
 private struct EmailSheetItem: Identifiable {

@@ -5,8 +5,9 @@ struct HomeTimelineView: View {
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var aiAccessStore: AIAccessStore
     @ObservedObject var aiDrafts: AIDraftsCoordinator
-    let account: AccountService
+    @ObservedObject var account: AccountService
     let appConfig: AppConfigStore
+    @ObservedObject var connections: ConnectionsService
     let privacyPolicyURL: URL
     let visible: Bool
     @Binding var openVoiceComposerFromControl: Bool
@@ -139,7 +140,9 @@ struct HomeTimelineView: View {
                 aiAccessStore: aiAccessStore,
                 aiDrafts: aiDrafts,
                 account: account,
-                appConfig: appConfig
+                appConfig: appConfig,
+                connections: connections,
+                privacyPolicyURL: privacyPolicyURL
             )
         }
         .sheet(isPresented: $aiDrafts.isShowingConsent) {
@@ -167,7 +170,7 @@ struct HomeTimelineView: View {
             }
         }
         .sheet(item: $viewModel.selectedItem) { item in
-            ReminderDetailView(item: item, quickPresetSettings: settingsStore.snapshot) {
+            ReminderDetailView(item: item, quickPresetSettings: settingsStore.snapshot, sharing: sharing(for: item)) {
                 await viewModel.untie(item)
             } tie: {
                 await viewModel.tie(item)
@@ -189,6 +192,15 @@ struct HomeTimelineView: View {
             ) { draft in
                 await viewModel.saveEdit(draft, item: editing.item)
             }
+        }
+        .sheet(item: $viewModel.suggestionToPresent) { suggestion in
+            SuggestionPromptView(
+                suggestion: suggestion,
+                language: settingsStore.appLanguage,
+                quickPresetSettings: settingsStore.snapshot,
+                accept: { await viewModel.acceptSuggestion(suggestion, draft: $0) },
+                dismissSuggestion: { viewModel.dismissSuggestion(suggestion) }
+            )
         }
         .sheet(item: $viewModel.retieTarget) { item in
             RetieSheet(item: item, quickPresetSettings: settingsStore.snapshot) { date in
@@ -357,6 +369,37 @@ struct HomeTimelineView: View {
     /// `user.features` it has no entry point at all.
     private var canUseVoiceDrafts: Bool {
         aiAccessStore.access.isAvailable(.drafts)
+    }
+
+    /// Members, rights and sync issues of the knot behind a row.
+    private func sharing(for item: TimelineItem) -> NodeSharing? {
+        guard let node = viewModel.node(for: item) else { return nil }
+        let me = account.profile?.id
+        let members = node.members
+        let memberIds = Set(members.map(\.userId))
+        return NodeSharing(
+            members: members,
+            ownerId: node.ownerId,
+            currentUserId: me,
+            isOwner: node.isOwned(by: me),
+            shareCandidates: connections.active.filter { !memberIds.contains($0.userId) },
+            syncIssue: node.syncIssueRaw,
+            share: { connection in
+                try? connections.share(node, with: connection)
+                viewModel.refreshPresentation()
+            },
+            removeMember: { userId in
+                try? connections.remove(member: userId, from: node, isSelf: false)
+                viewModel.refreshPresentation()
+            },
+            leave: {
+                guard let me else { return }
+                try? connections.remove(member: me, from: node, isSelf: true)
+                viewModel.load(rescheduleNotifications: true)
+            },
+            keepMine: { viewModel.keepMine(node) },
+            keepTheirs: { viewModel.dismissSyncIssue(node) }
+        )
     }
 
     /// After the composer closed: while the request is on its way (for

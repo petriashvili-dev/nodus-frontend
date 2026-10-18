@@ -292,7 +292,30 @@ actor SyncEngine: ModelActor {
                 try apply(job)
             }
             modelContext.delete(operation)
-        case .deleteNode, nil:
+        case .markSuggestionShown, .dismissSuggestion:
+            if let suggestion = try? APICoding.decoder.decode(SuggestionDTO.self, from: data) {
+                try apply(suggestion)
+            }
+            modelContext.delete(operation)
+        case .acceptSuggestion:
+            if let response = try? APICoding.decoder.decode(AcceptSuggestionResponse.self, from: data) {
+                try apply(response.suggestion)
+                try apply(response.node, respectingOverlay: false)
+            }
+            modelContext.delete(operation)
+        case .confirmConnection:
+            if let connection = try? APICoding.decoder.decode(ConnectionDTO.self, from: data) {
+                try apply(connection)
+            }
+            modelContext.delete(operation)
+        case .addMember:
+            if let node = try? APICoding.decoder.decode(NodeDTO.self, from: data) {
+                modelContext.delete(operation)
+                try apply(node, respectingOverlay: true)
+            } else {
+                modelContext.delete(operation)
+            }
+        case .removeConnection, .removeMember, .deleteNode, nil:
             modelContext.delete(operation)
         }
         try modelContext.save()
@@ -349,6 +372,12 @@ actor SyncEngine: ModelActor {
             default:
                 // Validation, forbidden, quota, a reused key: the server
                 // keeps this answer for the key, so the operation is final.
+                if operation.kind == .acceptSuggestion,
+                   let body = operation.body,
+                   let accepted = try? APICoding.decoder.decode(AcceptSuggestionBody.self, from: body),
+                   let optimisticNode = try node(id: accepted.node.id) {
+                    modelContext.delete(optimisticNode)
+                }
                 operation.status = .failed
                 operation.lastErrorCode = code
                 if let entity = operation.entityId, let node = try node(id: entity) {
@@ -499,6 +528,31 @@ actor SyncEngine: ModelActor {
         for job in snapshot.aiDraftJobs ?? [] {
             try apply(job)
         }
+        if let connections = snapshot.connections {
+            let ids = Set(connections.map(\.id))
+            for stale in try modelContext.fetch(FetchDescriptor<Connection>()) where !ids.contains(stale.id) {
+                modelContext.delete(stale)
+            }
+            for connection in connections {
+                try apply(connection)
+            }
+        }
+        if let suggestions = snapshot.suggestions {
+            let ids = Set(suggestions.map(\.id))
+            for stale in try modelContext.fetch(FetchDescriptor<Suggestion>()) where !ids.contains(stale.id) {
+                modelContext.delete(stale)
+            }
+            for suggestion in suggestions {
+                try apply(suggestion)
+            }
+        }
+        if let jobs = snapshot.importJobs {
+            let ids = Set(jobs.map(\.id))
+            for stale in try modelContext.fetch(FetchDescriptor<ImportJob>()) where !ids.contains(stale.id) {
+                modelContext.delete(stale)
+            }
+            for job in jobs { try apply(job) }
+        }
         if let user = snapshot.user {
             events.profile(user)
         }
@@ -529,6 +583,14 @@ actor SyncEngine: ModelActor {
             if let profile = try change.data?.decode(UserProfileDTO.self) {
                 events.profile(profile)
             }
+        case ("connection", "upsert"):
+            if let connection = try change.data?.decode(ConnectionDTO.self) {
+                try apply(connection)
+            }
+        case ("connection", "delete"):
+            if let id = UUID(uuidString: change.entityId), let connection = try connection(id: id) {
+                modelContext.delete(connection)
+            }
         case ("ai_draft_job", "upsert"):
             if let job = try change.data?.decode(AIDraftJobDTO.self) {
                 try apply(job)
@@ -537,9 +599,24 @@ actor SyncEngine: ModelActor {
             if let id = UUID(uuidString: change.entityId), let job = try draftJob(id: id) {
                 modelContext.delete(job)
             }
+        case ("suggestion", "upsert"):
+            if let suggestion = try change.data?.decode(SuggestionDTO.self) {
+                try apply(suggestion)
+            }
+        case ("suggestion", "delete"):
+            if let id = UUID(uuidString: change.entityId), let suggestion = try suggestion(id: id) {
+                modelContext.delete(suggestion)
+            }
+        case ("import_job", "upsert"):
+            if let job = try change.data?.decode(ImportJobDTO.self) {
+                try apply(job)
+            }
+        case ("import_job", "delete"):
+            if let id = UUID(uuidString: change.entityId), let job = try importJob(id: id) {
+                modelContext.delete(job)
+            }
         default:
-            // Connections, AI jobs, suggestions, imports and types from a
-            // newer server are handled by their own features or skipped.
+            // Unknown types from a newer server are skipped.
             break
         }
     }
@@ -569,6 +646,7 @@ actor SyncEngine: ModelActor {
         node.serverVersion = dto.version
         node.ownerId = dto.ownerId
         node.memberCount = max(dto.members?.count ?? 1, 1)
+        node.membersData = dto.members.flatMap { try? APICoding.encoder.encode($0) }
 
         if !hasOverlay {
             let decoded = NodeMapper.decode(dto, now: now())
@@ -691,6 +769,9 @@ actor SyncEngine: ModelActor {
         try modelContext.delete(model: ReminderOccurrenceState.self)
         try modelContext.delete(model: ReminderOccurrenceOverride.self)
         try modelContext.delete(model: AIDraftJob.self)
+        try modelContext.delete(model: Connection.self)
+        try modelContext.delete(model: Suggestion.self)
+        try modelContext.delete(model: ImportJob.self)
         try modelContext.delete(model: ReminderNode.self)
         let metadata = try metadata()
         metadata.cursor = nil
@@ -718,6 +799,74 @@ actor SyncEngine: ModelActor {
 
     // MARK: - Helpers
 
+    nonisolated struct FailedOperation: Sendable, Identifiable {
+        var id: UUID
+        var kind: String
+        var errorCode: String?
+        var createdAt: Date
+        var entityId: UUID?
+    }
+
+    func failedOperations() throws -> [FailedOperation] {
+        let failed = OutboxOperation.Status.failed.rawValue
+        return try modelContext.fetch(FetchDescriptor<OutboxOperation>(
+            predicate: #Predicate { $0.statusRaw == failed },
+            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
+        )).map {
+            FailedOperation(id: $0.id, kind: $0.kindRaw, errorCode: $0.lastErrorCode, createdAt: $0.createdAt, entityId: $0.entityId)
+        }
+    }
+
+    func retryFailedOperation(_ id: UUID) throws {
+        guard let operation = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.id == id })).first,
+              operation.status == .failed,
+              operation.lastErrorCode != "feature_not_available",
+              operation.lastErrorCode != "ai_consent_required" else { return }
+        let next = OutboxOperation(
+            kind: operation.kind ?? .updateNode,
+            method: operation.httpMethod,
+            path: operation.path,
+            body: operation.body,
+            entityId: operation.entityId,
+            needsExpectedVersion: operation.needsExpectedVersion,
+            now: now()
+        )
+        if let entity = operation.entityId, operation.needsExpectedVersion {
+            let currentNode = try node(id: entity)
+            next.expectedVersion = currentNode?.serverVersion ?? operation.expectedVersion
+            if operation.kind == .updateNode, let body = operation.body {
+                var update = try APICoding.decoder.decode(UpdateNodeBody.self, from: body)
+                update.expectedVersion = nil
+                next.body = try APICoding.encoder.encode(update)
+            }
+        }
+        modelContext.delete(operation)
+        modelContext.insert(next)
+        if let entity = operation.entityId, let node = try node(id: entity) { node.syncIssueRaw = nil }
+        try modelContext.save()
+    }
+
+    func cancelFailedOperation(_ id: UUID) throws {
+        guard let operation = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.id == id })).first,
+              operation.status == .failed else { return }
+        if operation.kind == .createNode, let entity = operation.entityId, let node = try node(id: entity) {
+            modelContext.delete(node)
+            try deleteOccurrences(of: entity)
+        } else if operation.kind == .acceptSuggestion,
+                  let body = operation.body,
+                  let accepted = try? APICoding.decoder.decode(AcceptSuggestionBody.self, from: body),
+                  let node = try node(id: accepted.node.id) {
+            modelContext.delete(node)
+        } else if operation.kind == .confirmAIDrafts {
+            try rollBackConfirmation(operation)
+        } else {
+            try rollBack(operation)
+        }
+        if let entity = operation.entityId, let node = try node(id: entity) { node.syncIssueRaw = nil }
+        modelContext.delete(operation)
+        try modelContext.save()
+    }
+
     private func metadata() throws -> SyncMetadata {
         if let existing = try modelContext.fetch(FetchDescriptor<SyncMetadata>()).first {
             return existing
@@ -727,8 +876,50 @@ actor SyncEngine: ModelActor {
         return created
     }
 
+    private func connection(id: UUID) throws -> Connection? {
+        try modelContext.fetch(FetchDescriptor<Connection>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private func apply(_ dto: ConnectionDTO) throws {
+        guard dto.status != "removed" else {
+            if let existing = try connection(id: dto.id) { modelContext.delete(existing) }
+            return
+        }
+        if let existing = try connection(id: dto.id) {
+            existing.apply(dto)
+        } else {
+            let created = Connection(id: dto.id, userId: dto.userId)
+            created.apply(dto)
+            modelContext.insert(created)
+        }
+    }
+
     private func draftJob(id: UUID) throws -> AIDraftJob? {
         try modelContext.fetch(FetchDescriptor<AIDraftJob>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private func suggestion(id: UUID) throws -> Suggestion? {
+        try modelContext.fetch(FetchDescriptor<Suggestion>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private func apply(_ dto: SuggestionDTO) throws {
+        if let existing = try suggestion(id: dto.id) {
+            existing.apply(dto)
+        } else {
+            modelContext.insert(Suggestion(dto))
+        }
+    }
+
+    private func importJob(id: UUID) throws -> ImportJob? {
+        try modelContext.fetch(FetchDescriptor<ImportJob>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    private func apply(_ dto: ImportJobDTO) throws {
+        if let existing = try importJob(id: dto.id) {
+            existing.apply(dto)
+        } else {
+            modelContext.insert(ImportJob(dto))
+        }
     }
 
     /// A server job; a confirmation still on its way keeps the local
