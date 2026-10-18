@@ -76,7 +76,14 @@ SwiftData — локальный кеш серверных данных плюс
 3. смена пояса устройства → `PUT /me/timezone` в очередь **после** уже ждущих правок;
 4. Outbox → pull → лента.
 
-Триггеры: запуск и foreground, локальное изменение (300 мс debounce), возвращение сети (`NWPathMonitor` — подсказка), `significantTimeChangeNotification` и `NSSystemTimeZoneDidChange`, таймер backoff. После цикла экран перечитывает хранилище и перепланирует уведомления.
+Триггеры: запуск и foreground, локальное изменение (300 мс debounce), возвращение сети (`NWPathMonitor` — подсказка), `significantTimeChangeNotification` и `NSSystemTimeZoneDidChange`, таймер backoff, сигнал SSE. После цикла экран перечитывает хранилище и перепланирует уведомления.
+
+## SSE (`EventStream`)
+
+- `GET /v1/events` только в foreground (`ContentView` → `SyncCoordinator.enterForeground/enterBackground`), `Last-Event-ID` — текущий курсор.
+- `sync.required` с `revision` больше курсора → запрос цикла; данные из события не применяются. После каждого (пере)подключения — цикл.
+- Разрыв: переподключение 3 с → … → 60 с (или `retry:` сервера); `401` — refresh; `429 too_many_connections` — пауза не меньше 30 с.
+- Разбор строк — `SSEParser` (`SSEParserTests`).
 
 ## Нить и уведомления (`TimelineService`)
 

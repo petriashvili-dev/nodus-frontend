@@ -637,6 +637,11 @@ actor SyncEngine: ModelActor {
         try modelContext.save()
     }
 
+    /// The last applied revision; SSE compares its signals with it.
+    func currentCursor() -> Int? {
+        try? metadata().cursor
+    }
+
     /// When the earliest postponed operation may be sent again.
     func nextRetryDate() throws -> Date? {
         let retryable = OutboxOperation.Status.retryableFailure.rawValue

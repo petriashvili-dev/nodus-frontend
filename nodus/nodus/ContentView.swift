@@ -59,12 +59,15 @@ struct ContentView: View {
             await playIntro()
         }
         .onChange(of: scenePhase, initial: true) { _, newPhase in
+            if newPhase == .background {
+                services.sync.enterBackground()
+            }
             guard newPhase == .active else { return }
             viewModel?.load(rescheduleNotifications: false)
             // Network never blocks the screen: the account and the data
             // catch up in the background.
             Task { await services.account.refresh() }
-            services.sync.requestSync()
+            services.sync.enterForeground()
         }
         .onOpenURL { url in
             guard url.scheme == "nodus" else { return }

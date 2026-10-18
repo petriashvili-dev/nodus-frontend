@@ -8,11 +8,12 @@ import os
 ///
 /// Triggers: launch and foreground, a local change (debounced), the network
 /// coming back (`NWPathMonitor` is only a hint), a calendar day or time
-/// zone change, and a backoff timer for postponed operations. SSE and push
-/// join later through `requestSync`.
+/// zone change, a backoff timer for postponed operations, and SSE signals
+/// while in the foreground.
 @MainActor
 final class SyncCoordinator {
     private let engine: SyncEngine
+    private var eventStream: EventStream?
     private let logger = Logger(subsystem: "app.nodus", category: "Sync")
     private let pathMonitor = NWPathMonitor()
 
@@ -28,6 +29,22 @@ final class SyncCoordinator {
 
     init(engine: SyncEngine) {
         self.engine = engine
+    }
+
+    /// The SSE connection; created by `AppServices` once the API exists.
+    func attach(_ stream: EventStream) {
+        eventStream = stream
+    }
+
+    /// Foreground: sync and keep the event stream open.
+    func enterForeground() {
+        requestSync()
+        Task { await eventStream?.start() }
+    }
+
+    /// Background: the stream is closed; push and the next launch catch up.
+    func enterBackground() {
+        Task { await eventStream?.stop() }
     }
 
     func start() {

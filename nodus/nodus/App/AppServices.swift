@@ -52,10 +52,17 @@ final class AppServices {
             )
         )
         sync = SyncCoordinator(engine: engine)
+        sync.attach(EventStream(
+            configuration: configuration,
+            session: session,
+            cursor: { await engine.currentCursor() },
+            onSignal: { Task { @MainActor in relay.syncSignal?() } }
+        ))
 
         relay.profile = { [account] in account.apply($0) }
         relay.accessRefused = { [account] in Task { await account.refresh() } }
         relay.sessionLost = { [sync] _ in sync.requestSync() }
+        relay.syncSignal = { [sync] in sync.requestSync() }
     }
 }
 
@@ -64,4 +71,5 @@ private final class EventRelay {
     var profile: ((UserProfileDTO) -> Void)?
     var accessRefused: (() -> Void)?
     var sessionLost: ((AuthSession.Loss) -> Void)?
+    var syncSignal: (() -> Void)?
 }
