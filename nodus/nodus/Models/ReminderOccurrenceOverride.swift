@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class ReminderOccurrenceOverride {
+nonisolated final class ReminderOccurrenceOverride {
     @Attribute(.unique) var id: UUID
     var reminderId: UUID
     var originalOccurrenceDate: Date

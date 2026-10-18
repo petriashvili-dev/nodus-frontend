@@ -36,18 +36,10 @@ struct nodusApp: App {
         NodusAppShortcuts.updateAppShortcutParameters()
     }
 
-    var sharedModelContainer: ModelContainer = {
-        do {
-            return try NodusModelContainer.make()
-        } catch {
-            fatalError("Could not create ModelContainer: \(error)")
-        }
-    }()
-
     var body: some Scene {
         WindowGroup {
             ContentView(services: services, notificationHandler: appDelegate.notificationHandler)
         }
-        .modelContainer(sharedModelContainer)
+        .modelContainer(services.modelContainer)
     }
 }

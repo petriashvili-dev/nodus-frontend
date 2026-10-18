@@ -2,7 +2,7 @@ import Foundation
 import SwiftData
 
 @Model
-final class ReminderNode {
+nonisolated final class ReminderNode {
     @Attribute(.unique) var id: UUID
     var title: String
     var note: String?
@@ -24,6 +24,30 @@ final class ReminderNode {
     /// active; occurrences before this instant are omitted from the thread
     /// and from local-notification scheduling.
     var pausedUntil: Date?
+
+    // MARK: Server state (docs/03-outbox-and-sync.md)
+    //
+    // The local row is a cache of the server's node plus the user's pending
+    // changes on top. Defaults let lightweight migration add these columns
+    // to knots saved before the backend existed.
+
+    /// The server `version` this row reflects; `0` until the server has
+    /// confirmed the node at least once.
+    var serverVersion: Int = 0
+    /// IANA zone the node's local date and time belong to. Empty for knots
+    /// created before the backend; they adopt the device zone when sent.
+    var timeZoneIdentifier: String = ""
+    var ownerId: UUID?
+    /// Number of participants including the owner; above one the node is
+    /// shared and conflicts are never resolved silently.
+    var memberCount: Int = 1
+    /// A one-time node without a date ("someday"), created on another
+    /// client. This client has no editor for it yet and keeps it off the
+    /// thread instead of inventing a date.
+    var isUndated: Bool = false
+    /// A local change the server rejected or that conflicts with someone
+    /// else's; shown quietly on the card.
+    var syncIssueRaw: String?
 
     init(
         id: UUID = UUID(),
@@ -71,6 +95,16 @@ final class ReminderNode {
 
     var isRepeating: Bool {
         repeatSchedule.isRepeating
+    }
+
+    var isShared: Bool {
+        memberCount > 1
+    }
+
+    /// The zone to send to the server; knots predating the backend never
+    /// recorded one and use the device's.
+    var timeZone: TimeZone {
+        TimeZone(identifier: timeZoneIdentifier) ?? .current
     }
 
     /// An empty list means "no notifications for this knot" — distinct

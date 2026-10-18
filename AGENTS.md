@@ -51,6 +51,7 @@
   xcodebuild -project nodus/nodus.xcodeproj -scheme nodus -destination 'generic/platform=iOS Simulator' build
   ```
 - Тесты — Swift Testing (`import Testing`, `#expect`/`#require`). Логику (Outbox, Sync, разбор ответов и ошибок, recurrence-проекции, планирование уведомлений, смена пояса) покрывать unit-тестами; сеть подменять через `URLProtocol`/протокол клиента, время — через инжектируемые часы, не `Date()` напрямую.
+- Сквозные тесты против локального backend (`nodusTests/BackendIntegrationTests`) включаются флагом `TEST_RUNNER_NODUS_E2E=1`; запуск сервера — `docs/09-operations.md` backend, команда — `docs/03-outbox-and-sync.md`.
 - Перед отчётом и коммитом: сборка без ошибок и новых предупреждений, тесты зелёные. Визуальные изменения проверить в симуляторе (в т. ч. Dynamic Type, Reduce Motion, VoiceOver на ключевых элементах). Не сообщать «готово», если что-то не собрано или не проверено — сказать прямо.
 
 ## Архитектурные правила

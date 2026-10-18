@@ -12,7 +12,7 @@ protocol NotificationScheduling {
     func schedule(node: ReminderNode, occurrenceDate: Date?, scheduledAt: Date?, settings: SettingsSnapshot) async
     func cancel(nodeId: UUID, occurrenceDate: Date?) async
     func cancelAll(nodeId: UUID) async
-    func rescheduleAll(nodes: [ReminderNode], timeline: [TimelineSectionModel], settings: SettingsSnapshot) async
+    func rescheduleAll(nodes: [ReminderNode], plan: [TimelineItem], settings: SettingsSnapshot) async
 }
 
 final class NotificationScheduler: NotificationScheduling {
@@ -148,7 +148,7 @@ final class NotificationScheduler: NotificationScheduling {
         center.removeDeliveredNotifications(withIdentifiers: deliveredIDs)
     }
 
-    func rescheduleAll(nodes: [ReminderNode], timeline: [TimelineSectionModel], settings: SettingsSnapshot) async {
+    func rescheduleAll(nodes: [ReminderNode], plan: [TimelineItem], settings: SettingsSnapshot) async {
         for node in nodes {
             guard !Task.isCancelled else { return }
             await cancelAll(nodeId: node.id)
@@ -156,11 +156,7 @@ final class NotificationScheduler: NotificationScheduling {
 
         guard settings.notificationsEnabled else { return }
 
-        let upcoming = timeline
-            .flatMap(\.items)
-            .filter { !$0.isLost && !$0.isNow && $0.status == .active && $0.scheduledAt <= Date().addingTimeInterval(30 * 24 * 60 * 60) }
-
-        for item in upcoming {
+        for item in plan {
             guard !Task.isCancelled else { return }
             guard let node = nodes.first(where: { $0.id == item.nodeId }) else { continue }
             await schedule(

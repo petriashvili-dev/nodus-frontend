@@ -8,6 +8,9 @@ enum NodusModelContainer {
             ReminderNode.self,
             ReminderOccurrenceState.self,
             ReminderOccurrenceOverride.self,
+            OutboxOperation.self,
+            SyncMetadata.self,
+            ServerOccurrence.self,
         ])
         let configuration = ModelConfiguration(
             schema: schema,

@@ -130,7 +130,7 @@ struct AuthSessionTests {
     }
 }
 
-final class LossRecorder: @unchecked Sendable {
+nonisolated final class LossRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var recorded: [AuthSession.Loss] = []
 

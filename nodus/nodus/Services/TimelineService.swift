@@ -9,14 +9,19 @@ struct TimelineService {
         self.calendar = calendar
     }
 
+    /// The thread. A node the server has confirmed shows exactly its
+    /// occurrences from the last `GET /feed`; a node created or edited
+    /// offline shows its nearest occurrence computed locally until the
+    /// server has it (docs/03-outbox-and-sync.md).
     func buildTimeline(
         nodes: [ReminderNode],
         states: [ReminderOccurrenceState],
         overrides: [ReminderOccurrenceOverride],
+        serverOccurrences: [ServerOccurrence] = [],
+        locallyChangedNodeIds: Set<UUID> = [],
         settings: SettingsSnapshot,
         now: Date = Date()
     ) -> [TimelineSectionModel] {
-        let dayStart = calendar.startOfDay(for: now)
         // Lost knots only ever stay on the thread through the end of the
         // day after they were due, so one-off occurrences never need to be
         // generated further back than that plus a small safety margin.
@@ -27,18 +32,19 @@ struct TimelineService {
         // rows for the same occurrence, and a crash on every launch is worse
         // than silently preferring one of them.
         let stateByOccurrence = Dictionary(states.map { (occurrenceKey($0.reminderId, $0.occurrenceDate), $0) }, uniquingKeysWith: { _, latest in latest })
+        let stateByServerKey = Dictionary(states.compactMap { state in state.key.map { ("\(state.reminderId.uuidString):\($0)", state) } }, uniquingKeysWith: { _, latest in latest })
         let overridesByOccurrence = Dictionary(overrides.map { (occurrenceKey($0.reminderId, $0.originalOccurrenceDate), $0) }, uniquingKeysWith: { _, latest in latest })
+        let feedByNode = Dictionary(grouping: serverOccurrences.filter(\.isInFeed), by: \.nodeId)
 
         var items = nodes.flatMap { node -> [TimelineItem] in
-            let occurrenceDates = occurrenceDates(for: node, pastStart: pastStart, now: now)
+            // A "someday" node from another client has no moment to place.
+            guard !node.isUndated else { return [] }
 
-            let nodeItems = occurrenceDates.compactMap { occurrenceDate -> TimelineItem? in
+            func item(occurrenceDate: Date, title: String, note: String?, status: NodeStatus) -> TimelineItem? {
                 let override = overridesByOccurrence[occurrenceKey(node.id, occurrenceDate)]
                 guard override?.isDeleted != true else { return nil }
 
                 let displayDate = override?.overriddenScheduledAt ?? occurrenceDate
-                let state = stateByOccurrence[occurrenceKey(node.id, occurrenceDate)]
-                let status = state?.status ?? node.status
                 let isLost = status == .active && displayDate < now
 
                 // A pause applies to the effective date, so an individually
@@ -61,8 +67,8 @@ struct TimelineService {
                     id: "\(node.id.uuidString)-\(Int(occurrenceDate.timeIntervalSince1970))",
                     nodeId: node.id,
                     occurrenceDate: node.isRepeating ? occurrenceDate : nil,
-                    title: node.title,
-                    note: node.note,
+                    title: title,
+                    note: note,
                     kind: node.repeatSchedule.displayLabel(language: settings.language),
                     repeatSchedule: node.repeatSchedule,
                     originDate: node.originDate,
@@ -75,19 +81,42 @@ struct TimelineService {
                 )
             }
 
+            let feed = feedByNode[node.id] ?? []
+            if node.serverVersion > 0, !locallyChangedNodeIds.contains(node.id), !feed.isEmpty {
+                // The server already chose what to show (today plus the next
+                // occurrence of a series); titles are as they were then.
+                return feed.compactMap { occurrence in
+                    let occurrenceDate = occurrence.scheduledAt ?? allDayMoment(occurrence, timeZone: node.timeZone)
+                    guard let occurrenceDate else { return nil }
+                    let status: NodeStatus
+                    if !node.isRepeating {
+                        status = node.status
+                    } else if let overlay = stateByServerKey[occurrence.id] {
+                        status = overlay.status
+                    } else {
+                        status = occurrence.isUntied ? .completed : .active
+                    }
+                    return item(occurrenceDate: occurrenceDate, title: occurrence.title, note: occurrence.note, status: status)
+                }
+            }
+
+            let nodeItems = occurrenceDates(for: node, pastStart: pastStart, now: now).compactMap { occurrenceDate in
+                let state = stateByOccurrence[occurrenceKey(node.id, occurrenceDate)]
+                return item(occurrenceDate: occurrenceDate, title: node.title, note: node.note, status: state?.status ?? node.status)
+            }
+
             guard node.isRepeating else {
                 return nodeItems
             }
 
-            // A repeating knot shows its two nearest future occurrences,
-            // plus any visible completed occurrence and the most recent
-            // overdue one. This gives the user one step of look-ahead while
-            // keeping the thread compact.
+            // A repeating knot shows its nearest future occurrence (two
+            // while the server feed has not arrived yet), plus any visible
+            // completed occurrence and the most recent overdue one.
             let mostRecentLost = nodeItems.filter(\.isLost).last
             let completedOccurrences = nodeItems.filter(\.isCompleted)
             let nextUpcoming = nodeItems
                 .filter { !$0.isCompleted && !$0.isLost && $0.scheduledAt >= now }
-                .prefix(2)
+                .prefix(node.serverVersion == 0 ? 1 : 2)
             return [mostRecentLost].compactMap { $0 } + completedOccurrences + nextUpcoming
         }
 
@@ -106,6 +135,58 @@ struct TimelineService {
                 guard let left = first.items.first?.scheduledAt, let right = second.items.first?.scheduledAt else { return false }
                 return left < right
             }
+    }
+
+    /// What to plan local notifications for: the server's occurrence window
+    /// for confirmed nodes, the thread's own items for nodes changed
+    /// offline. iOS keeps at most 64 pending requests and each occurrence
+    /// can take several (lead times, nudges), so only the nearest ones are
+    /// planned; the window slides on every sync and day change.
+    func notificationPlan(
+        timeline: [TimelineSectionModel],
+        nodes: [ReminderNode],
+        states: [ReminderOccurrenceState],
+        overrides: [ReminderOccurrenceOverride],
+        serverOccurrences: [ServerOccurrence],
+        locallyChangedNodeIds: Set<UUID>,
+        settings: SettingsSnapshot,
+        now: Date = Date(),
+        limit: Int = 12
+    ) -> [TimelineItem] {
+        let horizonByNode = Dictionary(grouping: serverOccurrences.filter(\.isInHorizon), by: \.nodeId)
+        let completedKeys = Set(states.filter { $0.status == .completed }.compactMap { state in state.key.map { "\(state.reminderId.uuidString):\($0)" } })
+        let hidden = Set(overrides.filter(\.isDeleted).map { occurrenceKey($0.reminderId, $0.originalOccurrenceDate) })
+        let serverPlanned = Set(nodes.filter { $0.serverVersion > 0 && !locallyChangedNodeIds.contains($0.id) && horizonByNode[$0.id] != nil }.map(\.id))
+
+        var plan = timeline.flatMap(\.items).filter { item in
+            !item.isNow && !item.isLost && item.status == .active && item.scheduledAt > now && !serverPlanned.contains(item.nodeId)
+        }
+        for node in nodes where serverPlanned.contains(node.id) && node.status == .active {
+            for occurrence in horizonByNode[node.id] ?? [] {
+                guard let moment = occurrence.scheduledAt ?? allDayMoment(occurrence, timeZone: node.timeZone),
+                      moment > now, !occurrence.isPast, !occurrence.isUntied,
+                      !completedKeys.contains(occurrence.id),
+                      !hidden.contains(occurrenceKey(node.id, moment)) else { continue }
+                if node.isRepeating, let pausedUntil = node.pausedUntil, moment < pausedUntil { continue }
+                plan.append(TimelineItem(
+                    id: occurrence.id,
+                    nodeId: node.id,
+                    occurrenceDate: node.isRepeating ? moment : nil,
+                    title: occurrence.title,
+                    note: occurrence.note,
+                    kind: node.repeatSchedule.displayLabel(language: settings.language),
+                    repeatSchedule: node.repeatSchedule,
+                    originDate: node.originDate,
+                    scheduledAt: moment,
+                    status: .active,
+                    isNow: false,
+                    isLost: false,
+                    isQuiet: false,
+                    tintHex: tint(for: node.repeatSchedule, isLost: false, isCompleted: false)
+                ))
+            }
+        }
+        return Array(plan.sorted { $0.scheduledAt < $1.scheduledAt }.prefix(limit))
     }
 
     func lostItems(in sections: [TimelineSectionModel]) -> [TimelineItem] {
@@ -230,6 +311,13 @@ struct TimelineService {
                 .lowercased(with: language.locale)
             return "\(dayMonth), \(weekday)"
         }
+    }
+
+    /// All-day occurrences have no moment; the app places them at 09:00 in
+    /// the node's zone.
+    private func allDayMoment(_ occurrence: ServerOccurrence, timeZone: TimeZone) -> Date? {
+        guard let date = occurrence.localDate else { return nil }
+        return NodeMapper.moment(date: date, time: occurrence.localTime ?? "09:00", calendar: NodeMapper.calendar(in: timeZone))
     }
 
     private func occurrenceKey(_ reminderId: UUID, _ date: Date) -> String {

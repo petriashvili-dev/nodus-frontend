@@ -2,12 +2,15 @@ import Foundation
 import SwiftData
 
 @Model
-final class ReminderOccurrenceState {
+nonisolated final class ReminderOccurrenceState {
     @Attribute(.unique) var id: UUID
     var reminderId: UUID
     var occurrenceDate: Date
     var statusRaw: String
     var completedAt: Date?
+    /// The server occurrence key (`g0-20261018-0`, `once`) this state belongs
+    /// to; `nil` for states recorded before the backend.
+    var key: String?
 
     init(
         id: UUID = UUID(),

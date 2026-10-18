@@ -66,7 +66,7 @@ actor Gate {
     }
 }
 
-final class InMemorySecureStore: SecureStore, @unchecked Sendable {
+nonisolated final class InMemorySecureStore: SecureStore, @unchecked Sendable {
     private let lock = NSLock()
     private var session: StoredSession?
     private var installation = UUID()
@@ -101,7 +101,7 @@ final class InMemorySecureStore: SecureStore, @unchecked Sendable {
 }
 
 /// A clock the test moves by hand.
-final class TestClock: @unchecked Sendable {
+nonisolated final class TestClock: @unchecked Sendable {
     private let lock = NSLock()
     private var current: Date
 
@@ -116,7 +116,7 @@ final class TestClock: @unchecked Sendable {
     }
 }
 
-enum Fixtures {
+nonisolated enum Fixtures {
     static let baseURL = URL(string: "https://api.test/v1")!
 
     static func tokensJSON(access: String, refresh: String, expiresAt: Date, userId: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!) -> String {

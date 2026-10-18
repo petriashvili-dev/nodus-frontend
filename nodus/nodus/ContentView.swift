@@ -61,9 +61,10 @@ struct ContentView: View {
         .onChange(of: scenePhase, initial: true) { _, newPhase in
             guard newPhase == .active else { return }
             viewModel?.load(rescheduleNotifications: false)
-            // Network never blocks the screen: the account catches up in
-            // the background and AI access follows the fresh profile.
+            // Network never blocks the screen: the account and the data
+            // catch up in the background.
             Task { await services.account.refresh() }
+            services.sync.requestSync()
         }
         .onOpenURL { url in
             guard url.scheme == "nodus" else { return }
@@ -128,7 +129,11 @@ struct ContentView: View {
         let scheduler = NotificationScheduler()
         scheduler.registerCategories(settings: settingsStore.snapshot)
         notificationScheduler = scheduler
-        let reminderService = ReminderService(repository: repository, notificationScheduler: scheduler)
+        let reminderService = ReminderService(
+            repository: repository,
+            notificationScheduler: scheduler,
+            didEnqueue: { [sync = services.sync] in sync.localChangeQueued() }
+        )
         let createdViewModel = HomeTimelineViewModel(
             repository: repository,
             timelineService: TimelineService(),
@@ -138,6 +143,12 @@ struct ContentView: View {
         )
         viewModel = createdViewModel
         localizer.update(language: settingsStore.appLanguage)
+
+        // Sync writes through its own context; screens re-read afterwards.
+        services.sync.onDataChanged = { [weak createdViewModel] in
+            createdViewModel?.load(rescheduleNotifications: true)
+        }
+        services.sync.start()
 
         notificationHandler.setActionHandler { action, nodeId, occurrenceDate in
             switch action {

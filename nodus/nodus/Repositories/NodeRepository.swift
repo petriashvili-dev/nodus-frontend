@@ -12,6 +12,18 @@ protocol NodeRepositoryProtocol {
     func deleteNode(_ node: ReminderNode) throws
     func deleteOccurrenceOverride(_ override: ReminderOccurrenceOverride) throws
     func saveChanges() throws
+
+    // Outbox: `enqueue` only inserts; the following save of the local
+    // change commits both in one transaction.
+    func enqueue(_ operation: OutboxOperation)
+    func unsentOperations(for entityId: UUID) throws -> [OutboxOperation]
+    func deleteOperation(_ operation: OutboxOperation)
+    func fetchServerOccurrences() throws -> [ServerOccurrence]
+    /// The server occurrence of a node at a moment, used to find its key.
+    func serverOccurrence(nodeId: UUID, scheduledAt: Date) throws -> ServerOccurrence?
+    /// Nodes whose template edit has not reached the server yet; the
+    /// thread shows their local version until it has.
+    func nodesWithUnsyncedTemplate() throws -> Set<UUID>
 }
 
 @MainActor
@@ -95,5 +107,42 @@ final class SwiftDataNodeRepository: NodeRepositoryProtocol {
 
     func saveChanges() throws {
         try context.save()
+    }
+
+    func enqueue(_ operation: OutboxOperation) {
+        context.insert(operation)
+    }
+
+    func unsentOperations(for entityId: UUID) throws -> [OutboxOperation] {
+        let pending = OutboxOperation.Status.pending.rawValue
+        return try context.fetch(FetchDescriptor<OutboxOperation>(
+            predicate: #Predicate { $0.entityId == entityId && $0.statusRaw == pending && !$0.hasBeenSent },
+            sortBy: [SortDescriptor(\.createdAt)]
+        ))
+    }
+
+    func deleteOperation(_ operation: OutboxOperation) {
+        context.delete(operation)
+    }
+
+    func fetchServerOccurrences() throws -> [ServerOccurrence] {
+        try context.fetch(FetchDescriptor<ServerOccurrence>())
+    }
+
+    func nodesWithUnsyncedTemplate() throws -> Set<UUID> {
+        let failed = OutboxOperation.Status.failed.rawValue
+        let create = OutboxOperation.Kind.createNode.rawValue
+        let update = OutboxOperation.Kind.updateNode.rawValue
+        let operations = try context.fetch(FetchDescriptor<OutboxOperation>(
+            predicate: #Predicate { $0.statusRaw != failed && ($0.kindRaw == create || $0.kindRaw == update) }
+        ))
+        return Set(operations.compactMap(\.entityId))
+    }
+
+    func serverOccurrence(nodeId: UUID, scheduledAt: Date) throws -> ServerOccurrence? {
+        let candidates = try context.fetch(FetchDescriptor<ServerOccurrence>(
+            predicate: #Predicate { $0.nodeId == nodeId }
+        ))
+        return candidates.first { $0.scheduledAt == scheduledAt }
     }
 }

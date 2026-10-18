@@ -1,6 +1,6 @@
 import Foundation
 
-enum NodeStatus: String, Codable {
+nonisolated enum NodeStatus: String, Codable {
     case active
     case completed
 }
@@ -13,7 +13,7 @@ enum UntiedKnotsVisibility: String, Codable, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-enum LeadTimeUnit: String, Codable, CaseIterable, Identifiable {
+nonisolated enum LeadTimeUnit: String, Codable, CaseIterable, Identifiable {
     case minutes
     case hours
     case days
@@ -60,7 +60,7 @@ enum LeadTimeUnit: String, Codable, CaseIterable, Identifiable {
 /// for every knot, whether it needs exactly one reminder (a task) or
 /// several at once (a yearly anniversary's 7-days/1-day/at-the-moment
 /// set). `amount == 0` always means "at the moment", regardless of unit.
-struct ReminderLeadTime: Codable, Hashable, Identifiable {
+nonisolated struct ReminderLeadTime: Codable, Hashable, Identifiable {
     var amount: Int
     var unit: LeadTimeUnit
 
@@ -120,7 +120,7 @@ struct ReminderLeadTime: Codable, Hashable, Identifiable {
     }
 }
 
-enum RepeatIntervalUnit: String, Codable, CaseIterable, Identifiable {
+nonisolated enum RepeatIntervalUnit: String, Codable, CaseIterable, Identifiable {
     case days
     case weeks
     case months
@@ -161,7 +161,7 @@ enum RepeatIntervalUnit: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-enum RepeatKind: String, Codable {
+nonisolated enum RepeatKind: String, Codable {
     case none
     case weekdays
     case interval
@@ -174,7 +174,7 @@ enum RepeatKind: String, Codable {
 /// outside `.interval` and ignored by equality/hashing then, so `.none`
 /// and `.weekdays` compare equal regardless of whatever placeholder
 /// values they were constructed with.
-struct RepeatSchedule: Codable, Hashable {
+nonisolated struct RepeatSchedule: Codable, Hashable {
     var kind: RepeatKind
     var amount: Int
     var unit: RepeatIntervalUnit
@@ -288,7 +288,7 @@ struct RepeatSchedule: Codable, Hashable {
     }
 }
 
-enum AppLanguage: String, Codable, CaseIterable, Identifiable {
+nonisolated enum AppLanguage: String, Codable, CaseIterable, Identifiable {
     case ru
     case en
 

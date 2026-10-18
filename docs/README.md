@@ -6,3 +6,4 @@
 |---|---|
 | [01-ai-access.md](01-ai-access.md) | доступ к AI-функциям по `user.features`, согласие, скрытие точек входа |
 | [02-api-and-account.md](02-api-and-account.md) | адрес сервера, API-клиент, токены и refresh, Keychain, регистрация устройства, профиль |
+| [03-outbox-and-sync.md](03-outbox-and-sync.md) | локальный кеш, Outbox, Delta Sync, лента из `/feed`, уведомления по окну экземпляров, смена пояса, виджет |

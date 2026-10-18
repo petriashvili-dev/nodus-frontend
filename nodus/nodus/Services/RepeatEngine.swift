@@ -1,6 +1,6 @@
 import Foundation
 
-struct RepeatEngine {
+nonisolated struct RepeatEngine {
     private let calendar: Calendar
 
     init(calendar: Calendar = .current) {

@@ -79,6 +79,8 @@ final class HomeTimelineViewModel: ObservableObject {
     private var cachedNodes: [ReminderNode] = []
     private var cachedOccurrenceStates: [ReminderOccurrenceState] = []
     private var cachedOccurrenceOverrides: [ReminderOccurrenceOverride] = []
+    private var cachedServerOccurrences: [ServerOccurrence] = []
+    private var locallyChangedNodeIds: Set<UUID> = []
     private var hasDatabaseSnapshot = false
 
     private var locale: Locale { settingsStore.appLanguage.locale }
@@ -107,6 +109,8 @@ final class HomeTimelineViewModel: ObservableObject {
             // both invisible and unnecessary for an immediate local read.
             cachedOccurrenceStates = try repository.fetchOccurrenceStates(since: occurrenceWindowStart)
             cachedOccurrenceOverrides = try repository.fetchOccurrenceOverrides(since: occurrenceWindowStart)
+            cachedServerOccurrences = try repository.fetchServerOccurrences()
+            locallyChangedNodeIds = try repository.nodesWithUnsyncedTemplate()
             hasDatabaseSnapshot = true
             rebuildTimeline(now: now, rescheduleNotifications: rescheduleNotifications)
         } catch {
@@ -130,6 +134,8 @@ final class HomeTimelineViewModel: ObservableObject {
             nodes: nodes,
             states: cachedOccurrenceStates,
             overrides: cachedOccurrenceOverrides,
+            serverOccurrences: cachedServerOccurrences,
+            locallyChangedNodeIds: locallyChangedNodeIds,
             settings: settingsStore.snapshot,
             now: now
         )
@@ -138,20 +144,28 @@ final class HomeTimelineViewModel: ObservableObject {
                 return PausedKnot(nodeId: node.id, title: node.title, resumesAt: pausedUntil)
             }
             .sorted { $0.resumesAt < $1.resumesAt }
-#if os(iOS)
-        WidgetCenter.shared.reloadAllTimelines()
-#endif
+        WidgetSnapshotWriter.write(sections: sections, now: now)
         lostItems = timelineService.lostItems(in: sections)
             .filter { Calendar.current.isDateInToday($0.scheduledAt) }
         updateDayState(now: now)
         if rescheduleNotifications {
-            scheduleNotificationRefresh(nodes: nodes, timeline: sections, settings: settingsStore.snapshot)
+            let plan = timelineService.notificationPlan(
+                timeline: sections,
+                nodes: nodes,
+                states: cachedOccurrenceStates,
+                overrides: cachedOccurrenceOverrides,
+                serverOccurrences: cachedServerOccurrences,
+                locallyChangedNodeIds: locallyChangedNodeIds,
+                settings: settingsStore.snapshot,
+                now: now
+            )
+            scheduleNotificationRefresh(nodes: nodes, plan: plan, settings: settingsStore.snapshot)
         }
     }
 
     private func scheduleNotificationRefresh(
         nodes: [ReminderNode],
-        timeline: [TimelineSectionModel],
+        plan: [TimelineItem],
         settings: SettingsSnapshot
     ) {
         notificationRescheduleTask?.cancel()
@@ -161,7 +175,7 @@ final class HomeTimelineViewModel: ObservableObject {
             // need not run while the user is still editing a knot.
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
-            await notificationScheduler.rescheduleAll(nodes: nodes, timeline: timeline, settings: settings)
+            await notificationScheduler.rescheduleAll(nodes: nodes, plan: plan, settings: settings)
         }
     }
 

@@ -1,13 +1,12 @@
 import WidgetKit
 import SwiftUI
-import SwiftData
 import CoreText
 
 // MARK: - Shared App Group
 
 /// Must match the app group registered in both `nodus.entitlements` and
-/// `NodusWidgetExtension.entitlements`, and the identifier the main app's
-/// `ModelConfiguration` opens its SwiftData store under.
+/// `NodusWidgetExtension.entitlements`; the app writes the widget snapshot
+/// there.
 let nodusAppGroupID = "group.app.nodus"
 
 private enum WidgetFontRegistrar {
@@ -36,225 +35,38 @@ private extension Font {
     }
 }
 
-// MARK: - Mirrored models
+// MARK: - Shared read model
 //
-// These mirror the main app's `@Model` types (`ReminderNode`,
-// `ReminderOccurrenceState`, `ReminderOccurrenceOverride` in
-// nodus/Models/) attribute-for-attribute. SwiftData matches a store by
-// entity name and attributes rather than by which target compiled the
-// Swift type, so a widget extension can open the same SQLite file with
-// its own copy of the model as long as the shape matches — there is no
-// shared framework target in this project to import the real types from.
-// Keep this in sync by hand if the app's schema changes.
+// The widget never opens the app's SwiftData store: a second copy of the
+// schema in this target could drift and make SwiftData migrate the shared
+// store to the wrong shape. Instead the app writes a small JSON snapshot of
+// the knots it would show (`WidgetSnapshotWriter` in the app) to the app
+// group, and the widget only reads it. Keep `WidgetSnapshot` in sync with
+// the app's copy by hand — it is the whole contract between the two.
 
-enum NodeStatus: String, Codable {
-    case active
-    case completed
-}
-
-@Model
-final class ReminderNode {
-    @Attribute(.unique) var id: UUID
-    var title: String
-    var note: String?
-    var scheduledAt: Date
-    var originDate: Date?
-    var repeatScheduleRaw: String = "none"
-    var leadTimesRaw: String?
-    var statusRaw: String
-    var createdAt: Date
-    var updatedAt: Date
-    var completedAt: Date?
-    var pausedUntil: Date?
-
-    init(id: UUID = UUID(), title: String, scheduledAt: Date, statusRaw: String, createdAt: Date = Date(), updatedAt: Date = Date()) {
-        self.id = id
-        self.title = title
-        self.scheduledAt = scheduledAt
-        self.statusRaw = statusRaw
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
+struct WidgetSnapshot: Codable {
+    struct Item: Codable {
+        let id: String
+        let title: String
+        let date: Date
     }
 
-    var status: NodeStatus { NodeStatus(rawValue: statusRaw) ?? .active }
-    var repeatSchedule: WidgetRepeatSchedule { WidgetRepeatSchedule(rawToken: repeatScheduleRaw) ?? .none }
-}
+    /// Active (tied) occurrences of today and tomorrow, already filtered for
+    /// pauses and hidden occurrences by the app. Tomorrow's items keep the
+    /// widget right after midnight even if the app has not run yet.
+    let items: [Item]
+    let generatedAt: Date
 
-@Model
-final class ReminderOccurrenceState {
-    @Attribute(.unique) var id: UUID
-    var reminderId: UUID
-    var occurrenceDate: Date
-    var statusRaw: String
-    var completedAt: Date?
+    static let fileName = "widget-snapshot.json"
 
-    init(
-        id: UUID = UUID(),
-        reminderId: UUID,
-        occurrenceDate: Date,
-        status: NodeStatus = .active,
-        completedAt: Date? = nil
-    ) {
-        self.id = id
-        self.reminderId = reminderId
-        self.occurrenceDate = occurrenceDate
-        self.statusRaw = status.rawValue
-        self.completedAt = completedAt
-    }
-
-    var status: NodeStatus { NodeStatus(rawValue: statusRaw) ?? .active }
-}
-
-@Model
-final class ReminderOccurrenceOverride {
-    @Attribute(.unique) var id: UUID
-    var reminderId: UUID
-    var originalOccurrenceDate: Date
-    var overriddenScheduledAt: Date?
-    var isDeleted: Bool
-
-    init(id: UUID = UUID(), reminderId: UUID, originalOccurrenceDate: Date, isDeleted: Bool = false) {
-        self.id = id
-        self.reminderId = reminderId
-        self.originalOccurrenceDate = originalOccurrenceDate
-        self.isDeleted = isDeleted
-    }
-}
-
-// MARK: - Mirrored repeat schedule (trimmed: only what's needed to find today's occurrences)
-
-enum WidgetRepeatKind: String {
-    case none
-    case weekdays
-    case interval
-}
-
-enum WidgetRepeatUnit: String {
-    case days, weeks, months, years
-}
-
-struct WidgetRepeatSchedule {
-    var kind: WidgetRepeatKind
-    var amount: Int
-    var unit: WidgetRepeatUnit
-
-    static let none = WidgetRepeatSchedule(kind: .none, amount: 1, unit: .days)
-
-    init(kind: WidgetRepeatKind, amount: Int, unit: WidgetRepeatUnit) {
-        self.kind = kind
-        self.amount = amount
-        self.unit = unit
-    }
-
-    init?(rawToken: String) {
-        switch rawToken {
-        case "none": self = .none; return
-        case "weekdays": self = WidgetRepeatSchedule(kind: .weekdays, amount: 1, unit: .days); return
-        default: break
-        }
-        if rawToken.hasSuffix("mo"), let amount = Int(rawToken.dropLast(2)), amount > 0 {
-            self = WidgetRepeatSchedule(kind: .interval, amount: amount, unit: .months)
-            return
-        }
-        guard let letter = rawToken.last, let amount = Int(rawToken.dropLast()), amount > 0 else { return nil }
-        switch letter {
-        case "d": self = WidgetRepeatSchedule(kind: .interval, amount: amount, unit: .days)
-        case "w": self = WidgetRepeatSchedule(kind: .interval, amount: amount, unit: .weeks)
-        case "y": self = WidgetRepeatSchedule(kind: .interval, amount: amount, unit: .years)
-        default: return nil
-        }
-    }
-}
-
-/// Produces the next visible recurrence for the widget. When that recurrence
-/// is today, the following occurrence is included as useful near-term context.
-struct WidgetRepeatEngine {
-    let calendar = Calendar.current
-
-    func visibleOccurrences(for node: ReminderNode, now: Date) -> [Date] {
-        let dayStart = calendar.startOfDay(for: now)
-        let schedule = node.repeatSchedule
-
-        guard schedule.kind != .none else {
-            return calendar.isDate(node.scheduledAt, inSameDayAs: now) ? [node.scheduledAt] : []
-        }
-
-        // A pause excludes every occurrence before its end. Start searching
-        // there, rather than filtering a fixed pair of dates afterwards, so
-        // a long pause still surfaces the first resumed occurrence.
-        let notBefore = max(dayStart, node.pausedUntil ?? dayStart)
-        var first = firstOccurrence(for: node, schedule: schedule, notBefore: notBefore)
-        if first < node.scheduledAt { first = node.scheduledAt }
-        guard first >= dayStart else { return [] }
-
-        guard calendar.isDate(first, inSameDayAs: now) else { return [first] }
-        guard let next = nextOccurrence(after: first, original: node.scheduledAt, schedule: schedule) else {
-            return [first]
-        }
-        return [first, next]
-    }
-
-    func occurrenceToday(for node: ReminderNode, now: Date) -> Date? {
-        let schedule = node.repeatSchedule
-        let occurrence: Date
-
-        if schedule.kind == .none {
-            occurrence = node.scheduledAt
-        } else {
-            let dayStart = calendar.startOfDay(for: now)
-            occurrence = firstOccurrence(for: node, schedule: schedule, notBefore: dayStart)
-        }
-
-        return calendar.isDate(occurrence, inSameDayAs: now) ? occurrence : nil
-    }
-
-    private func firstOccurrence(for node: ReminderNode, schedule: WidgetRepeatSchedule, notBefore start: Date) -> Date {
-        var current = adjustedYearlyDateIfNeeded(node.scheduledAt, year: calendar.component(.year, from: start), schedule: schedule)
-        if schedule.kind == .weekdays && calendar.isDateInWeekend(current) {
-            current = nextWeekdayOccurrence(after: current) ?? current
-        }
-        while current < start {
-            guard let next = nextOccurrence(after: current, original: node.scheduledAt, schedule: schedule) else { break }
-            current = next
-        }
-        return current
-    }
-
-    private func nextOccurrence(after date: Date, original: Date, schedule: WidgetRepeatSchedule) -> Date? {
-        switch schedule.kind {
-        case .none: return nil
-        case .weekdays: return nextWeekdayOccurrence(after: date)
-        case .interval:
-            switch schedule.unit {
-            case .days: return calendar.date(byAdding: .day, value: schedule.amount, to: date)
-            case .weeks: return calendar.date(byAdding: .weekOfYear, value: schedule.amount, to: date)
-            case .months: return calendar.date(byAdding: .month, value: schedule.amount, to: date)
-            case .years:
-                return adjustedYearlyDate(original, year: calendar.component(.year, from: date) + schedule.amount)
-            }
-        }
-    }
-
-    private func nextWeekdayOccurrence(after date: Date) -> Date? {
-        var candidate = date
-        repeat {
-            guard let next = calendar.date(byAdding: .day, value: 1, to: candidate) else { return nil }
-            candidate = next
-        } while calendar.isDateInWeekend(candidate)
-        return candidate
-    }
-
-    private func adjustedYearlyDateIfNeeded(_ original: Date, year: Int, schedule: WidgetRepeatSchedule) -> Date {
-        schedule.unit == .years ? adjustedYearlyDate(original, year: year) : original
-    }
-
-    private func adjustedYearlyDate(_ original: Date, year: Int) -> Date {
-        var components = calendar.dateComponents([.month, .day, .hour, .minute, .second], from: original)
-        components.year = year
-        if components.month == 2 && components.day == 29 && calendar.date(from: components) == nil {
-            components.day = 28
-        }
-        return calendar.date(from: components) ?? original
+    static func load() -> WidgetSnapshot? {
+        guard let url = FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: nodusAppGroupID)?
+            .appending(path: fileName),
+            let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        return try? decoder.decode(WidgetSnapshot.self, from: data)
     }
 }
 
@@ -266,81 +78,21 @@ struct TodayWidgetNode: Identifiable {
     let date: Date
 }
 
-@MainActor
 func fetchTodayNodes(now: Date = Date()) -> [TodayWidgetNode] {
-    let schema = Schema([ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self])
-    let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, groupContainer: .identifier(nodusAppGroupID))
-
-    guard let container = try? ModelContainer(for: schema, configurations: [configuration]) else { return [] }
-    let context = ModelContext(container)
-
-    guard let nodes = try? context.fetch(FetchDescriptor<ReminderNode>()) else { return [] }
-    let states = (try? context.fetch(FetchDescriptor<ReminderOccurrenceState>())) ?? []
-    let overrides = (try? context.fetch(FetchDescriptor<ReminderOccurrenceOverride>())) ?? []
-
-    let stateByKey = Dictionary(states.map { ("\($0.reminderId)-\(Int($0.occurrenceDate.timeIntervalSince1970))", $0) }, uniquingKeysWith: { _, latest in latest })
-    let overrideByKey = Dictionary(overrides.map { ("\($0.reminderId)-\(Int($0.originalOccurrenceDate.timeIntervalSince1970))", $0) }, uniquingKeysWith: { _, latest in latest })
-    let engine = WidgetRepeatEngine()
     let calendar = Calendar.current
-
-    var result: [TodayWidgetNode] = []
-
-    for node in nodes {
-        // Widgets always show the active thread only. This deliberately does
-        // not follow the app's archive visibility preference: a completed
-        // knot should disappear from the widget in every configuration.
-        guard node.status != .completed, node.completedAt == nil else { continue }
-
-        for occurrenceDate in engine.visibleOccurrences(for: node, now: now) {
-            let key = "\(node.id)-\(Int(occurrenceDate.timeIntervalSince1970))"
-            if overrideByKey[key]?.isDeleted == true { continue }
-            let displayDate = overrideByKey[key]?.overriddenScheduledAt ?? occurrenceDate
-            if let state = stateByKey[key], state.status == .completed || state.completedAt != nil { continue }
-            // Past active occurrences are represented only by the lost-knot
-            // counter in the header, never as rows in the upcoming list.
-            guard calendar.isDateInToday(displayDate), displayDate >= now else { continue }
-
-            result.append(TodayWidgetNode(
-                id: "\(node.id)-\(Int(displayDate.timeIntervalSince1970))",
-                title: node.title,
-                date: displayDate
-            ))
-        }
-    }
-
-    return result.sorted { $0.date < $1.date }
+    return (WidgetSnapshot.load()?.items ?? [])
+        .filter { calendar.isDateInToday($0.date) && $0.date >= now }
+        .map { TodayWidgetNode(id: $0.id, title: $0.title, date: $0.date) }
+        .sorted { $0.date < $1.date }
 }
 
-@MainActor
+/// Past active occurrences are represented only by the lost-knot counter in
+/// the header, never as rows in the upcoming list.
 func fetchLostNodeCount(now: Date = Date()) -> Int {
-    let schema = Schema([ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self])
-    let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false, groupContainer: .identifier(nodusAppGroupID))
-
-    guard let container = try? ModelContainer(for: schema, configurations: [configuration]) else { return 0 }
-    let context = ModelContext(container)
-    guard let nodes = try? context.fetch(FetchDescriptor<ReminderNode>()) else { return 0 }
-
-    let states = (try? context.fetch(FetchDescriptor<ReminderOccurrenceState>())) ?? []
-    let overrides = (try? context.fetch(FetchDescriptor<ReminderOccurrenceOverride>())) ?? []
-    let stateByKey = Dictionary(states.map { ("\($0.reminderId)-\(Int($0.occurrenceDate.timeIntervalSince1970))", $0) }, uniquingKeysWith: { _, latest in latest })
-    let overrideByKey = Dictionary(overrides.map { ("\($0.reminderId)-\(Int($0.originalOccurrenceDate.timeIntervalSince1970))", $0) }, uniquingKeysWith: { _, latest in latest })
     let calendar = Calendar.current
-    let engine = WidgetRepeatEngine()
-
-    return nodes.reduce(into: 0) { count, node in
-        guard node.status == .active, node.completedAt == nil,
-              let occurrenceDate = engine.occurrenceToday(for: node, now: now) else { return }
-
-        let key = "\(node.id)-\(Int(occurrenceDate.timeIntervalSince1970))"
-        guard overrideByKey[key]?.isDeleted != true else { return }
-        if let state = stateByKey[key], state.status == .completed || state.completedAt != nil { return }
-
-        let displayDate = overrideByKey[key]?.overriddenScheduledAt ?? occurrenceDate
-        guard displayDate < now, calendar.isDate(displayDate, inSameDayAs: now) else { return }
-        if let pausedUntil = node.pausedUntil, displayDate < pausedUntil { return }
-
-        count += 1
-    }
+    return (WidgetSnapshot.load()?.items ?? [])
+        .filter { calendar.isDate($0.date, inSameDayAs: now) && $0.date < now }
+        .count
 }
 
 // MARK: - Empty-thread phrases
