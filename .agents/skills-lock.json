@@ -5,6 +5,9 @@
     "swiftui-design-skill": { "source": "https://github.com/wholiver/swiftui-design-skill", "path": ".", "commit": "2c82638ebd3c801d9d2d12b5f2d6c20495939995", "license": "MIT" },
     "swift-concurrency": { "source": "https://github.com/AvdLee/Swift-Concurrency-Agent-Skill", "path": "skills/swift-concurrency", "commit": "d5770817d2622e1585b1f7eaebc791a9cb0959c8", "license": "MIT" },
     "swift-testing-expert": { "source": "https://github.com/AvdLee/Swift-Testing-Agent-Skill", "path": "swift-testing-expert", "commit": "798e9b1a2bcac164d4f0c781908199e754f0bab6", "license": "MIT" },
-    "swiftdata-pro": { "source": "https://github.com/twostraws/SwiftData-Agent-Skill", "path": "swiftdata-pro", "commit": "922d989473a9914210b41529a1ac5636aff4b8c1", "license": "MIT" }
+    "swiftdata-pro": { "source": "https://github.com/twostraws/SwiftData-Agent-Skill", "path": "swiftdata-pro", "commit": "922d989473a9914210b41529a1ac5636aff4b8c1", "license": "MIT" },
+    "swift-architecture-skill": { "source": "https://github.com/efremidze/swift-architecture-skill", "path": "swift-architecture-skill", "commit": "60e177612f4ed9dc7799b3674830e594c76fa00c", "license": "MIT" },
+    "code-review": { "source": "https://github.com/anthropics/knowledge-work-plugins", "path": "engineering/skills/code-review", "commit": "33eeda1e8fd856455b05479d13a0f85b5f803744", "license": "Apache-2.0" },
+    "swift-security-expert": { "source": "https://github.com/ivan-magda/swift-security-skill", "path": "swift-security-expert", "commit": "bda2e0ccee6a64d45ec2b93790d0876c90e4eb89", "license": "MIT" }
   }
 }
