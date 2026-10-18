@@ -53,7 +53,6 @@ final class HomeTimelineViewModel: ObservableObject {
     @Published var actionMenuItem: TimelineItem?
     @Published var actionMenuAnchor: CGRect = .zero
     @Published var permissionPromptDraft: ReminderDraft?
-    @Published private(set) var isSubmittingVoiceTranscript = false
     @Published var errorMessage: String?
     @Published var toast: ToastPresentation?
 
@@ -260,52 +259,20 @@ final class HomeTimelineViewModel: ObservableObject {
         await tie(draft)
     }
 
-    /// Runs the same structured-text parser used by the Siri shortcut, then
-    /// creates the returned knots through this screen's repository so the
-    /// timeline refreshes immediately.
-    func tieVoiceTranscript(_ text: String) async -> Bool {
-        let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { return false }
-        isSubmittingVoiceTranscript = true
-        defer { isSubmittingVoiceTranscript = false }
+    /// Voice text becomes knots only through the backend AI drafts flow
+    /// (`POST /v1/ai/node-drafts`) — the client never calls a model itself.
+    /// Until that flow is connected the entry point is hidden, so this is
+    /// reachable only from a stale composer and answers neutrally.
+    func submitVoiceTranscript(_ text: String) async -> Bool {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        presentFeatureUnavailable()
+        return false
+    }
 
-        do {
-            let result = try await DirectNeuroAPIParser().parse(
-                transcript,
-                context: NodeParsingContext(timeZone: .current, locale: settingsStore.appLanguage.locale)
-            )
-            if let clarification = result.clarifications.first {
-                presentToast(clarification.question)
-                return false
-            }
-            guard !result.nodes.isEmpty else {
-                errorMessage = settingsStore.appLanguage.localizedString("Could not tie the knot.")
-                return false
-            }
-
-            for parsed in result.nodes {
-                guard let scheduledAt = parsed.scheduledAt, scheduledAt >= .earliestReminderTime() else {
-                    presentToast(settingsStore.appLanguage.localizedString("Please choose a future date and time."))
-                    return false
-                }
-                let node = try await reminderService.tie(
-                    ReminderDraft(
-                        title: parsed.title,
-                        note: parsed.note ?? "",
-                        scheduledAt: scheduledAt,
-                        repeatSchedule: parsed.repeatSchedule
-                    ),
-                    settings: settingsStore.snapshot
-                )
-                cachedNodes.append(node)
-            }
-            refreshPresentation(rescheduleNotifications: true)
-            presentToast(settingsStore.appLanguage.localizedString("Knot tied."))
-            return true
-        } catch {
-            errorMessage = localizedMessage(for: error)
-            return false
-        }
+    /// The only wording an unavailable AI feature ever gets: no plans,
+    /// subscriptions or "coming soon" (see DESIGN_SYSTEM.md §7).
+    func presentFeatureUnavailable() {
+        presentToast(settingsStore.appLanguage.localizedString("This feature is currently unavailable."))
     }
 
     func untie(_ item: TimelineItem) async {

@@ -11,7 +11,6 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: HomeTimelineViewModel
     @State private var destination: Destination?
-    @State private var isShowingNodusPlus = false
     @State private var archiveForExport: NodusArchive?
     @State private var isExportingArchive = false
     @State private var isImportingArchive = false
@@ -49,9 +48,6 @@ struct SettingsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: destination)
-        .sheet(isPresented: $isShowingNodusPlus) {
-            NodusPlusView(settings: settings)
-        }
         .sheet(item: $editingPausedKnot) { knot in
             PauseUntilSheet(initialDate: knot.resumesAt) { date in
                 await viewModel.pause(nodeId: knot.nodeId, until: date)
@@ -123,10 +119,6 @@ struct SettingsView: View {
     private var menu: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
-                SettingsMenuRow(title: settings.appLanguage.localizedString("Subscription")) {
-                    isShowingNodusPlus = true
-                }
-
                 SettingsMenuRow(title: settings.appLanguage.localizedString("Notifications")) {
                     destination = .notifications
                 }
@@ -255,10 +247,10 @@ struct SettingsView: View {
         }
         .padding(.top, 14)
         .overlay(alignment: .leading) {
-            // This is literally the first two rows of the subscription
-            // thread: preserve its 304pt coordinate system, then crop it.
-            // Rescaling the thread changes its normalized curve and makes
-            // the knots look unlike the subscription screen.
+            // The first two rows of a full 304pt thread: preserve its
+            // coordinate system, then crop it. Rescaling the thread changes
+            // its normalized curve and makes the knots look unlike the
+            // thread elsewhere in the app.
             TimelineThread(knotFractions: [0.079, 0.329])
                 .stroke(
                     LinearGradient(
@@ -450,7 +442,7 @@ private struct ArchiveTransferRow: View {
 /// gradient, and stroke rather than being separate SF Symbol decorations.
 private struct ArchiveThreadArrows: Shape {
     func path(in rect: CGRect) -> Path {
-        // Match the first two knot centers in `NodusPlusView` exactly.
+        // Match the knot centers of the cropped thread in `archiveActions` exactly.
         let exportY: CGFloat = 24
         let importY: CGFloat = 100
         let threadGap: CGFloat = 17

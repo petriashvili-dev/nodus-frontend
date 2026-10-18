@@ -6,6 +6,7 @@ struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var settingsStore = SettingsStore()
+    @StateObject private var aiAccessStore = AIAccessStore()
     @StateObject private var localizer = NodusLocalizer(language: .defaultValue)
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
     @AppStorage(
@@ -42,6 +43,7 @@ struct ContentView: View {
                     HomeTimelineView(
                         viewModel: viewModel,
                         settingsStore: settingsStore,
+                        aiAccessStore: aiAccessStore,
                         visible: homeVisible,
                         openVoiceComposerFromControl: $openVoiceComposerFromControl
                     )
@@ -80,8 +82,6 @@ struct ContentView: View {
                 viewModel?.isShowingEditor = true
             case "voice":
                 openVoiceComposerFromControl = true
-            case "subscription":
-                viewModel?.isShowingSettings = true
             case "node":
                 guard
                     let rawNodeID = url.pathComponents.dropFirst().first,

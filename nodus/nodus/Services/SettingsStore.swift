@@ -10,9 +10,6 @@ final class SettingsStore: ObservableObject {
     @AppStorage("hapticsEnabled") var hapticsEnabled = true
     @AppStorage("inAppSoundsEnabled") var inAppSoundsEnabled = true
     @AppStorage("animatedSplashEnabled") var animatedSplashEnabled = true
-    /// Temporary switch used to preview all subscribed states before StoreKit
-    /// is connected. Replace this with entitlement state at purchase time.
-    @AppStorage("isNodusPlusTestActive", store: UserDefaults(suiteName: NodusModelContainer.appGroupID)!) var isNodusPlusActive = true
     @AppStorage("hasSeenVoicePermissionPrimer") var hasSeenVoicePermissionPrimer = false
     @AppStorage("quickMorningMinutes") var morningMinutes = 9 * 60
     @AppStorage("quickEveningMinutes") var eveningMinutes = 18 * 60

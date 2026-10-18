@@ -1,7 +1,7 @@
 import SwiftData
 
 enum NodusModelContainer {
-    static let appGroupID = "group.app.nodus"
+    nonisolated static let appGroupID = "group.app.nodus"
 
     static func make() throws -> ModelContainer {
         let schema = Schema([

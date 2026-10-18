@@ -15,6 +15,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		BB0000000000000000000007 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4B4B5DFF2FED25610025FE2E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 4B4B5E062FED25610025FE2E;
+			remoteInfo = nodus;
+		};
 		AA00000000000000000011 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 4B4B5DFF2FED25610025FE2E /* Project object */;
@@ -39,6 +46,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		BB0000000000000000000002 /* nodusTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = nodusTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4B4B5E072FED25610025FE2E /* nodus.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = nodus.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00000000000000000001 /* NodusWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NodusWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA00000000000000000023 /* NodusWidgetExtension/OpenVoiceInputIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NodusWidgetExtension/OpenVoiceInputIntent.swift; sourceTree = SOURCE_ROOT; };
@@ -48,6 +56,11 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		BB0000000000000000000003 /* nodusTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = nodusTests;
+			sourceTree = "<group>";
+		};
 		4B4B5E092FED25610025FE2E /* nodus */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = nodus;
@@ -61,6 +74,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		BB0000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		4B4B5E042FED25610025FE2E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -83,6 +103,7 @@
 			children = (
 				4B4B5E092FED25610025FE2E /* nodus */,
 				AA00000000000000000003 /* NodusWidgetExtension */,
+				BB0000000000000000000003 /* nodusTests */,
 				4B4B5E082FED25610025FE2E /* Products */,
 				4B63602130334F4F00D3DC6B /* Recovered References */,
 			);
@@ -93,6 +114,7 @@
 			children = (
 				4B4B5E072FED25610025FE2E /* nodus.app */,
 				AA00000000000000000001 /* NodusWidgetExtension.appex */,
+				BB0000000000000000000002 /* nodusTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -111,6 +133,29 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		BB0000000000000000000001 /* nodusTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = BB0000000000000000000009 /* Build configuration list for PBXNativeTarget "nodusTests" */;
+			buildPhases = (
+				BB0000000000000000000004 /* Sources */,
+				BB0000000000000000000005 /* Frameworks */,
+				BB0000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				BB0000000000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				BB0000000000000000000003 /* nodusTests */,
+			);
+			name = nodusTests;
+			packageProductDependencies = (
+			);
+			productName = nodusTests;
+			productReference = BB0000000000000000000002 /* nodusTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		4B4B5E062FED25610025FE2E /* nodus */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 4B4B5E142FED25620025FE2E /* Build configuration list for PBXNativeTarget "nodus" */;
@@ -173,6 +218,10 @@
 					AA00000000000000000002 = {
 						CreatedOnToolsVersion = 26.4;
 					};
+					BB0000000000000000000001 = {
+						CreatedOnToolsVersion = 26.4;
+						TestTargetID = 4B4B5E062FED25610025FE2E;
+					};
 				};
 			};
 			buildConfigurationList = 4B4B5E022FED25610025FE2E /* Build configuration list for PBXProject "nodus" */;
@@ -192,11 +241,19 @@
 			targets = (
 				4B4B5E062FED25610025FE2E /* nodus */,
 				AA00000000000000000002 /* NodusWidgetExtension */,
+				BB0000000000000000000001 /* nodusTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		BB0000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		4B4B5E052FED25610025FE2E /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -217,6 +274,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		BB0000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		4B4B5E032FED25610025FE2E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -235,6 +299,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		BB0000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 4B4B5E062FED25610025FE2E /* nodus */;
+			targetProxy = BB0000000000000000000007 /* PBXContainerItemProxy */;
+		};
 		AA00000000000000000013 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = AA00000000000000000002 /* NodusWidgetExtension */;
@@ -243,6 +312,54 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		BB000000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 787J96WNTY;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.nodus.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/nodus.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/nodus";
+			};
+			name = Debug;
+		};
+		BB000000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 787J96WNTY;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = app.nodus.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/nodus.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/nodus";
+			};
+			name = Release;
+		};
 		4B4B5E122FED25620025FE2E /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -524,6 +641,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		BB0000000000000000000009 /* Build configuration list for PBXNativeTarget "nodusTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BB000000000000000000000A /* Debug */,
+				BB000000000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		4B4B5E022FED25610025FE2E /* Build configuration list for PBXProject "nodus" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

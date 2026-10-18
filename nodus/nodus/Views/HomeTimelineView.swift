@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeTimelineView: View {
     @ObservedObject var viewModel: HomeTimelineViewModel
     @ObservedObject var settingsStore: SettingsStore
+    @ObservedObject var aiAccessStore: AIAccessStore
     let visible: Bool
     @Binding var openVoiceComposerFromControl: Bool
     @State private var currentDate = Date()
@@ -18,11 +19,11 @@ struct HomeTimelineView: View {
             topBar
             floatingButton
 
-            if isShowingVoiceComposer {
+            if isShowingVoiceComposer && canUseVoiceDrafts {
                 VoiceInputComposer(
                     speech: speech,
                     language: settingsStore.appLanguage,
-                    isSubmitting: viewModel.isSubmittingVoiceTranscript,
+                    isSubmitting: false,
                     cancel: dismissVoiceComposer,
                     submit: submitVoiceTranscript
                 )
@@ -96,7 +97,17 @@ struct HomeTimelineView: View {
         .onChange(of: openVoiceComposerFromControl, initial: true) { _, shouldOpen in
             guard shouldOpen else { return }
             openVoiceComposerFromControl = false
+            // The Control Center control cannot be hidden per user, so it
+            // stays installed and answers neutrally without `ai_drafts`.
+            guard canUseVoiceDrafts else {
+                viewModel.presentFeatureUnavailable()
+                return
+            }
             openVoiceComposer()
+        }
+        .onChange(of: canUseVoiceDrafts) { _, isAvailable in
+            // Revoked on the server while the composer was open.
+            if !isAvailable { dismissVoiceComposer() }
         }
         .sheet(isPresented: $viewModel.isShowingEditor) {
             ReminderEditorView(quickPresetSettings: settingsStore.snapshot) { draft in
@@ -201,7 +212,7 @@ struct HomeTimelineView: View {
                     } else {
                         EmptyDayContent(
                             action: { viewModel.isShowingEditor = true },
-                            voiceAction: openVoiceComposer,
+                            voiceAction: voiceComposerAction,
                             isRecording: speech.isRecording,
                             language: settingsStore.appLanguage
                         )
@@ -287,7 +298,9 @@ struct HomeTimelineView: View {
                         viewModel.isShowingEditor = true
                     }
 
-                    VoiceCaptureButton(isRecording: speech.isRecording, language: settingsStore.appLanguage, size: 52, action: openVoiceComposer)
+                    if canUseVoiceDrafts {
+                        VoiceCaptureButton(isRecording: speech.isRecording, language: settingsStore.appLanguage, size: 52, action: openVoiceComposer)
+                    }
                 }
             }
         }
@@ -296,6 +309,17 @@ struct HomeTimelineView: View {
         .opacity(visible ? 1 : 0)
         .offset(y: visible ? 0 : 14)
         .animation(.easeOut(duration: 0.8).delay(0.18), value: visible)
+    }
+
+    /// Voice input exists only to feed AI drafts, so without `ai_drafts` in
+    /// `user.features` it has no entry point at all.
+    private var canUseVoiceDrafts: Bool {
+        aiAccessStore.access.isAvailable(.drafts)
+    }
+
+    private var voiceComposerAction: (() -> Void)? {
+        guard canUseVoiceDrafts else { return nil }
+        return openVoiceComposer
     }
 
     private func dismissVoiceComposer() {
@@ -320,7 +344,7 @@ struct HomeTimelineView: View {
 
     private func submitVoiceTranscript(_ transcript: String) {
         Task {
-            if await viewModel.tieVoiceTranscript(transcript) {
+            if await viewModel.submitVoiceTranscript(transcript) {
                 dismissVoiceComposer()
             }
         }
