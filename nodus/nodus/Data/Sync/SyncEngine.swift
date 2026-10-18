@@ -2,8 +2,8 @@ import Foundation
 import SwiftData
 import os
 
-/// Talks to the server on behalf of the local store, off the main actor
-/// with its own `ModelContext` (docs/03-outbox-and-sync.md).
+/// Talks to the server and applies responses through `LocalStore`, off the
+/// main actor (docs/03-outbox-and-sync.md).
 ///
 /// - `flushOutbox` sends queued operations in order per entity, with the
 ///   same `Idempotency-Key` on every retry and a new operation after a
@@ -29,7 +29,7 @@ actor SyncEngine: ModelActor {
     private let now: @Sendable () -> Date
     private let logger = Logger(subsystem: "app.nodus", category: "Sync")
 
-    private var modelContext: ModelContext { modelExecutor.modelContext }
+    private let store: any LocalStore
 
     init(
         container: ModelContainer,
@@ -42,6 +42,7 @@ actor SyncEngine: ModelActor {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         modelExecutor = DefaultSerialModelExecutor(modelContext: context)
+        store = SwiftDataLocalStore(context: context)
         self.api = api
         self.session = session
         self.events = events
@@ -88,9 +89,9 @@ actor SyncEngine: ModelActor {
         guard metadata.userId != userId else { return }
         if metadata.userId != nil {
             logger.notice("Account changed; the local cache is re-uploaded")
-            try modelContext.delete(model: OutboxOperation.self)
-            try modelContext.delete(model: ServerOccurrence.self)
-            for node in try modelContext.fetch(FetchDescriptor<ReminderNode>()) {
+            try store.deleteAll(OutboxOperation.self)
+            try store.deleteAll(ServerOccurrence.self)
+            for node in try store.fetch(ReminderNode.self) {
                 node.serverVersion = 0
                 node.ownerId = nil
                 node.memberCount = 1
@@ -100,7 +101,7 @@ actor SyncEngine: ModelActor {
             metadata.sentTimeZone = nil
         }
         metadata.userId = userId
-        try modelContext.save()
+        try store.save()
     }
 
     /// Knots saved before the backend existed (or re-uploaded after an
@@ -109,15 +110,15 @@ actor SyncEngine: ModelActor {
     private func queueLegacyNodesIfNeeded() throws {
         let metadata = try metadata()
         guard !metadata.didQueueLegacyNodes else { return }
-        let queued = Set(try modelContext.fetch(FetchDescriptor<OutboxOperation>()).compactMap(\.entityId))
-        let nodes = try modelContext.fetch(FetchDescriptor<ReminderNode>(predicate: #Predicate { $0.serverVersion == 0 }))
+        let queued = Set(try store.fetch(OutboxOperation.self).compactMap(\.entityId))
+        let nodes = try store.fetch(ReminderNode.self).filter { $0.serverVersion == 0 }
         let moment = now()
         for node in nodes where !queued.contains(node.id) {
             if node.timeZoneIdentifier.isEmpty {
                 node.timeZoneIdentifier = TimeZone.current.identifier
             }
             let body = NodeMapper.createBody(id: node.id, fields: Self.fields(of: node))
-            modelContext.insert(OutboxOperation(
+            store.insert(OutboxOperation(
                 kind: .createNode, method: .post, path: "nodes",
                 body: try APICoding.encoder.encode(body), entityId: node.id, now: moment
             ))
@@ -125,7 +126,7 @@ actor SyncEngine: ModelActor {
             // completion moments up to 30 days old.
             if !node.isRepeating, node.status == .completed {
                 let completedAt = max(node.completedAt ?? moment, moment.addingTimeInterval(-29 * 24 * 60 * 60))
-                modelContext.insert(OutboxOperation(
+                store.insert(OutboxOperation(
                     kind: .untie, method: .put, path: "nodes/\(node.id.uuidString)/occurrences/once/untie",
                     body: try APICoding.encoder.encode(UntieBody(completedAt: completedAt)),
                     entityId: node.id, now: moment
@@ -133,7 +134,7 @@ actor SyncEngine: ModelActor {
             }
         }
         metadata.didQueueLegacyNodes = true
-        try modelContext.save()
+        try store.save()
     }
 
     /// The device zone changed (a flight, the first launch): nodes are
@@ -142,15 +143,15 @@ actor SyncEngine: ModelActor {
     private func queueTimeZoneIfNeeded(_ zone: TimeZone) throws {
         let metadata = try metadata()
         guard metadata.sentTimeZone != zone.identifier else { return }
-        let existing = try modelContext.fetch(FetchDescriptor<OutboxOperation>())
+        let existing = try store.fetch(OutboxOperation.self)
             .filter { $0.kind == .setTimezone && !$0.hasBeenSent }
-        existing.forEach(modelContext.delete)
-        modelContext.insert(OutboxOperation(
+        existing.forEach(store.delete)
+        store.insert(OutboxOperation(
             kind: .setTimezone, method: .put, path: "me/timezone",
             body: try APICoding.encoder.encode(["timezone": zone.identifier]),
             entityId: nil, now: now()
         ))
-        try modelContext.save()
+        try store.save()
     }
 
     // MARK: - Outbox
@@ -187,15 +188,15 @@ actor SyncEngine: ModelActor {
     /// key; the server will not run it twice.
     private func resetInterruptedOperations() throws {
         let inFlight = OutboxOperation.Status.inFlight.rawValue
-        let interrupted = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.statusRaw == inFlight }))
+        let interrupted = try store.fetch(OutboxOperation.self).filter { $0.statusRaw == inFlight }
         guard !interrupted.isEmpty else { return }
         interrupted.forEach { $0.status = .pending }
-        try modelContext.save()
+        try store.save()
     }
 
     /// The oldest operation whose entity has nothing unfinished before it.
     private func nextSendableOperation() throws -> OutboxOperation? {
-        let all = try modelContext.fetch(FetchDescriptor<OutboxOperation>(sortBy: [SortDescriptor(\.createdAt)]))
+        let all = try store.fetch(OutboxOperation.self).sorted { $0.createdAt < $1.createdAt }
         let moment = now()
         var blockedEntities = Set<UUID>()
         for operation in all {
@@ -224,7 +225,7 @@ actor SyncEngine: ModelActor {
             operation.status = .inFlight
             operation.hasBeenSent = true
             operation.attempts += 1
-            try modelContext.save()
+            try store.save()
 
             var query: [URLQueryItem] = []
             if operation.httpMethod == .delete, let version = operation.expectedVersion, operation.needsExpectedVersion {
@@ -263,26 +264,26 @@ actor SyncEngine: ModelActor {
         case .createNode, .updateNode:
             let dto = try APICoding.decoder.decode(NodeDTO.self, from: data)
             advanceExpectedVersion(after: operation, to: dto.version)
-            modelContext.delete(operation)
+            store.delete(operation)
             try apply(dto, respectingOverlay: true)
         case .untie, .retie:
             let state = try APICoding.decoder.decode(OccurrenceStateDTO.self, from: data)
-            modelContext.delete(operation)
+            store.delete(operation)
             try apply(state)
         case .setTimezone:
             if let body = operation.body,
                let sent = try? APICoding.decoder.decode([String: String].self, from: body)["timezone"] {
                 try metadata().sentTimeZone = sent
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .setAIConsent, .updateProfile:
             if let profile = try? APICoding.decoder.decode(UserProfileDTO.self, from: data) {
                 events.profile(profile)
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .confirmAIDrafts:
             let response = try APICoding.decoder.decode(ConfirmDraftsResponse.self, from: data)
-            modelContext.delete(operation)
+            store.delete(operation)
             try apply(response.job)
             for node in response.created?.nodes ?? [] {
                 try apply(node, respectingOverlay: false)
@@ -291,41 +292,41 @@ actor SyncEngine: ModelActor {
             if let job = try? APICoding.decoder.decode(AIDraftJobDTO.self, from: data) {
                 try apply(job)
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .markSuggestionShown, .dismissSuggestion:
             if let suggestion = try? APICoding.decoder.decode(SuggestionDTO.self, from: data) {
                 try apply(suggestion)
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .acceptSuggestion:
             if let response = try? APICoding.decoder.decode(AcceptSuggestionResponse.self, from: data) {
                 try apply(response.suggestion)
                 try apply(response.node, respectingOverlay: false)
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .confirmConnection:
             if let connection = try? APICoding.decoder.decode(ConnectionDTO.self, from: data) {
                 try apply(connection)
             }
-            modelContext.delete(operation)
+            store.delete(operation)
         case .addMember:
             if let node = try? APICoding.decoder.decode(NodeDTO.self, from: data) {
-                modelContext.delete(operation)
+                store.delete(operation)
                 try apply(node, respectingOverlay: true)
             } else {
-                modelContext.delete(operation)
+                store.delete(operation)
             }
         case .removeConnection, .removeMember, .deleteNode, nil:
-            modelContext.delete(operation)
+            store.delete(operation)
         }
-        try modelContext.save()
+        try store.save()
     }
 
     /// A chain of own edits: each next operation is based on the version
     /// the previous one produced.
     private func advanceExpectedVersion(after operation: OutboxOperation, to version: Int) {
         guard let entity = operation.entityId,
-              let later = try? modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.entityId == entity })) else { return }
+              let later = try? store.fetch(OutboxOperation.self).filter({ $0.entityId == entity }) else { return }
         for next in later where next.id != operation.id && next.needsExpectedVersion && !next.hasBeenSent {
             next.expectedVersion = version
         }
@@ -334,7 +335,7 @@ actor SyncEngine: ModelActor {
     private func handleFailure(of operation: OutboxOperation, error: APIError) -> SendOutcome {
         if case .sessionEnded = error {
             operation.status = .pending
-            try? modelContext.save()
+            try? store.save()
             return .stop
         }
         // Still unauthorized after a refresh: an auth hiccup, not a verdict
@@ -350,7 +351,7 @@ actor SyncEngine: ModelActor {
             case (409, "node_already_exists"):
                 // The create already happened (a lost response); the next
                 // pull brings the canonical node.
-                modelContext.delete(operation)
+                store.delete(operation)
             case (409, "version_conflict"):
                 try resolveConflict(operation, error: error)
             case (_, _) where operation.kind == .confirmAIDrafts && error.code != "job_not_ready":
@@ -364,7 +365,7 @@ actor SyncEngine: ModelActor {
                 }
             case (404, _):
                 try rollBack(operation)
-                modelContext.delete(operation)
+                store.delete(operation)
             case (403, "feature_not_available"), (403, "ai_consent_required"):
                 operation.status = .failed
                 operation.lastErrorCode = code
@@ -376,7 +377,7 @@ actor SyncEngine: ModelActor {
                    let body = operation.body,
                    let accepted = try? APICoding.decoder.decode(AcceptSuggestionBody.self, from: body),
                    let optimisticNode = try node(id: accepted.node.id) {
-                    modelContext.delete(optimisticNode)
+                    store.delete(optimisticNode)
                 }
                 operation.status = .failed
                 operation.lastErrorCode = code
@@ -384,7 +385,7 @@ actor SyncEngine: ModelActor {
                     node.syncIssueRaw = "rejected"
                 }
             }
-            try modelContext.save()
+            try store.save()
         } catch {
             logger.error("Could not record an Outbox failure")
         }
@@ -397,7 +398,7 @@ actor SyncEngine: ModelActor {
         // 1 s, 2 s, 4 s… up to 5 minutes, with jitter.
         let base = min(pow(2, Double(max(operation.attempts - 1, 0))), 300)
         operation.nextAttemptAt = now().addingTimeInterval(base * Double.random(in: 0.8...1.2))
-        try? modelContext.save()
+        try? store.save()
         return code == "offline" ? .offline : .retryLater
     }
 
@@ -443,8 +444,8 @@ actor SyncEngine: ModelActor {
             update.expectedVersion = nil
             copy.body = try APICoding.encoder.encode(update)
         }
-        modelContext.delete(operation)
-        modelContext.insert(copy)
+        store.delete(operation)
+        store.insert(copy)
     }
 
     /// `404`: the node or occurrence is gone on the server (deleted, access
@@ -455,11 +456,11 @@ actor SyncEngine: ModelActor {
         switch operation.kind {
         case .untie, .retie:
             let key = Self.occurrenceKey(inPath: operation.path)
-            let overlays = try modelContext.fetch(FetchDescriptor<ReminderOccurrenceState>(predicate: #Predicate { $0.reminderId == entity }))
-            overlays.filter { $0.key == key }.forEach(modelContext.delete)
+            let overlays = try store.fetch(ReminderOccurrenceState.self).filter { $0.reminderId == entity && $0.key == key }
+            overlays.forEach(store.delete)
         case .updateNode, .deleteNode:
             if let node = try node(id: entity) {
-                modelContext.delete(node)
+                store.delete(node)
             }
             try deleteOccurrences(of: entity)
         default:
@@ -473,7 +474,7 @@ actor SyncEngine: ModelActor {
         guard let body = operation.body,
               let confirmation = try? APICoding.decoder.decode(ConfirmDraftsBody.self, from: body) else { return }
         for created in confirmation.nodes {
-            if let node = try node(id: created.id) { modelContext.delete(node) }
+            if let node = try node(id: created.id) { store.delete(node) }
         }
         if let jobId = operation.entityId, let job = try draftJob(id: jobId), job.status == .confirmed {
             job.status = .ready
@@ -505,7 +506,7 @@ actor SyncEngine: ModelActor {
             }
             try self.metadata().cursor = page.nextCursor
             try self.metadata().lastSuccessAt = now()
-            try modelContext.save()
+            try store.save()
             next = page.nextCursor
             guard page.hasMore else { return }
         }
@@ -517,10 +518,10 @@ actor SyncEngine: ModelActor {
         let snapshot = try await api.send(APIRequest<SnapshotDTO>(method: .get, path: "sync/snapshot"))
         let serverIds = Set(snapshot.nodes.map(\.id))
         let pendingEntities = try unfinishedEntities()
-        for node in try modelContext.fetch(FetchDescriptor<ReminderNode>())
+        for node in try store.fetch(ReminderNode.self)
         where node.serverVersion > 0 && !serverIds.contains(node.id) && !pendingEntities.contains(node.id) {
             try deleteOccurrences(of: node.id)
-            modelContext.delete(node)
+            store.delete(node)
         }
         for dto in snapshot.nodes {
             try apply(dto, respectingOverlay: true)
@@ -530,8 +531,8 @@ actor SyncEngine: ModelActor {
         }
         if let connections = snapshot.connections {
             let ids = Set(connections.map(\.id))
-            for stale in try modelContext.fetch(FetchDescriptor<Connection>()) where !ids.contains(stale.id) {
-                modelContext.delete(stale)
+            for stale in try store.fetch(Connection.self) where !ids.contains(stale.id) {
+                store.delete(stale)
             }
             for connection in connections {
                 try apply(connection)
@@ -539,8 +540,8 @@ actor SyncEngine: ModelActor {
         }
         if let suggestions = snapshot.suggestions {
             let ids = Set(suggestions.map(\.id))
-            for stale in try modelContext.fetch(FetchDescriptor<Suggestion>()) where !ids.contains(stale.id) {
-                modelContext.delete(stale)
+            for stale in try store.fetch(Suggestion.self) where !ids.contains(stale.id) {
+                store.delete(stale)
             }
             for suggestion in suggestions {
                 try apply(suggestion)
@@ -548,8 +549,8 @@ actor SyncEngine: ModelActor {
         }
         if let jobs = snapshot.importJobs {
             let ids = Set(jobs.map(\.id))
-            for stale in try modelContext.fetch(FetchDescriptor<ImportJob>()) where !ids.contains(stale.id) {
-                modelContext.delete(stale)
+            for stale in try store.fetch(ImportJob.self) where !ids.contains(stale.id) {
+                store.delete(stale)
             }
             for job in jobs { try apply(job) }
         }
@@ -559,7 +560,7 @@ actor SyncEngine: ModelActor {
         let metadata = try metadata()
         metadata.cursor = snapshot.cursor
         metadata.lastSuccessAt = now()
-        try modelContext.save()
+        try store.save()
     }
 
     private func apply(_ change: SyncChangeDTO) throws {
@@ -572,7 +573,7 @@ actor SyncEngine: ModelActor {
             // Deleted, or no longer shared with this user.
             guard let id = UUID(uuidString: change.entityId) else { return }
             if let node = try node(id: id), try !unfinishedEntities().contains(id) || node.isShared {
-                modelContext.delete(node)
+                store.delete(node)
             }
             try deleteOccurrences(of: id)
         case ("occurrence_state", "upsert"):
@@ -589,7 +590,7 @@ actor SyncEngine: ModelActor {
             }
         case ("connection", "delete"):
             if let id = UUID(uuidString: change.entityId), let connection = try connection(id: id) {
-                modelContext.delete(connection)
+                store.delete(connection)
             }
         case ("ai_draft_job", "upsert"):
             if let job = try change.data?.decode(AIDraftJobDTO.self) {
@@ -597,7 +598,7 @@ actor SyncEngine: ModelActor {
             }
         case ("ai_draft_job", "delete"):
             if let id = UUID(uuidString: change.entityId), let job = try draftJob(id: id) {
-                modelContext.delete(job)
+                store.delete(job)
             }
         case ("suggestion", "upsert"):
             if let suggestion = try change.data?.decode(SuggestionDTO.self) {
@@ -605,7 +606,7 @@ actor SyncEngine: ModelActor {
             }
         case ("suggestion", "delete"):
             if let id = UUID(uuidString: change.entityId), let suggestion = try suggestion(id: id) {
-                modelContext.delete(suggestion)
+                store.delete(suggestion)
             }
         case ("import_job", "upsert"):
             if let job = try change.data?.decode(ImportJobDTO.self) {
@@ -613,7 +614,7 @@ actor SyncEngine: ModelActor {
             }
         case ("import_job", "delete"):
             if let id = UUID(uuidString: change.entityId), let job = try importJob(id: id) {
-                modelContext.delete(job)
+                store.delete(job)
             }
         default:
             // Unknown types from a newer server are skipped.
@@ -641,7 +642,7 @@ actor SyncEngine: ModelActor {
                 createdAt: dto.createdAt,
                 updatedAt: dto.updatedAt
             )
-            modelContext.insert(node)
+            store.insert(node)
         }
         node.serverVersion = dto.version
         node.ownerId = dto.ownerId
@@ -667,13 +668,13 @@ actor SyncEngine: ModelActor {
             // The horizon of this node is replaced as a whole; feed entries
             // stay until the next feed refresh.
             let nodeId = dto.id
-            let existing = try modelContext.fetch(FetchDescriptor<ServerOccurrence>(predicate: #Predicate { $0.nodeId == nodeId }))
+            let existing = try store.fetch(ServerOccurrence.self).filter { $0.nodeId == nodeId }
             let incoming = Set(occurrences.map { ServerOccurrence.identifier(nodeId: nodeId, key: $0.key) })
             for occurrence in existing where !incoming.contains(occurrence.id) {
                 if occurrence.isInFeed {
                     occurrence.isInHorizon = false
                 } else {
-                    modelContext.delete(occurrence)
+                    store.delete(occurrence)
                 }
             }
             for occurrence in occurrences {
@@ -684,7 +685,7 @@ actor SyncEngine: ModelActor {
 
     private func apply(_ state: OccurrenceStateDTO) throws {
         let id = ServerOccurrence.identifier(nodeId: state.nodeId, key: state.key)
-        if let occurrence = try modelContext.fetch(FetchDescriptor<ServerOccurrence>(predicate: #Predicate { $0.id == id })).first {
+        if let occurrence = try store.fetch(ServerOccurrence.self).first(where: { $0.id == id }) {
             occurrence.stateRaw = state.state
             occurrence.completedAt = state.completedAt
         }
@@ -697,19 +698,19 @@ actor SyncEngine: ModelActor {
         // would hide later changes from other devices.
         guard try !unfinishedEntities().contains(nodeId) else { return }
         let key = state.key
-        let overlays = try modelContext.fetch(FetchDescriptor<ReminderOccurrenceState>(predicate: #Predicate { $0.reminderId == nodeId }))
-        overlays.filter { $0.key == key }.forEach(modelContext.delete)
+        let overlays = try store.fetch(ReminderOccurrenceState.self).filter { $0.reminderId == nodeId && $0.key == key }
+        overlays.forEach(store.delete)
     }
 
     @discardableResult
     private func upsert(_ dto: OccurrenceDTO, inFeed: Bool?, inHorizon: Bool?) throws -> ServerOccurrence {
         let id = ServerOccurrence.identifier(nodeId: dto.nodeId, key: dto.key)
         let occurrence: ServerOccurrence
-        if let existing = try modelContext.fetch(FetchDescriptor<ServerOccurrence>(predicate: #Predicate { $0.id == id })).first {
+        if let existing = try store.fetch(ServerOccurrence.self).first(where: { $0.id == id }) {
             occurrence = existing
         } else {
             occurrence = ServerOccurrence(nodeId: dto.nodeId, key: dto.key)
-            modelContext.insert(occurrence)
+            store.insert(occurrence)
         }
         occurrence.title = dto.title
         occurrence.note = dto.description
@@ -746,7 +747,7 @@ actor SyncEngine: ModelActor {
             URLQueryItem(name: "to", value: LocalDate.string(from: windowTo, calendar: calendar)),
         ]))
 
-        for occurrence in try modelContext.fetch(FetchDescriptor<ServerOccurrence>()) {
+        for occurrence in try store.fetch(ServerOccurrence.self) {
             occurrence.isInFeed = false
             occurrence.isInHorizon = false
         }
@@ -756,30 +757,30 @@ actor SyncEngine: ModelActor {
         for occurrence in window.occurrences {
             try upsert(occurrence, inFeed: nil, inHorizon: true)
         }
-        try modelContext.delete(model: ServerOccurrence.self, where: #Predicate { !$0.isInFeed && !$0.isInHorizon })
-        try modelContext.save()
+        try store.deleteAll(ServerOccurrence.self) { !$0.isInFeed && !$0.isInHorizon }
+        try store.save()
     }
 
     /// Recovery, logout, deletion: everything of the previous account goes,
     /// including its unsent operations. `userId` is the account the empty
     /// cache now belongs to, so nothing is re-uploaded into it.
     func wipeLocalData(for userId: UUID?) throws {
-        try modelContext.delete(model: OutboxOperation.self)
-        try modelContext.delete(model: ServerOccurrence.self)
-        try modelContext.delete(model: ReminderOccurrenceState.self)
-        try modelContext.delete(model: ReminderOccurrenceOverride.self)
-        try modelContext.delete(model: AIDraftJob.self)
-        try modelContext.delete(model: Connection.self)
-        try modelContext.delete(model: Suggestion.self)
-        try modelContext.delete(model: ImportJob.self)
-        try modelContext.delete(model: ReminderNode.self)
+        try store.deleteAll(OutboxOperation.self)
+        try store.deleteAll(ServerOccurrence.self)
+        try store.deleteAll(ReminderOccurrenceState.self)
+        try store.deleteAll(ReminderOccurrenceOverride.self)
+        try store.deleteAll(AIDraftJob.self)
+        try store.deleteAll(Connection.self)
+        try store.deleteAll(Suggestion.self)
+        try store.deleteAll(ImportJob.self)
+        try store.deleteAll(ReminderNode.self)
         let metadata = try metadata()
         metadata.cursor = nil
         metadata.userId = userId
         metadata.didQueueLegacyNodes = true
         metadata.sentTimeZone = nil
         metadata.lastSuccessAt = nil
-        try modelContext.save()
+        try store.save()
     }
 
     /// The last applied revision; SSE compares its signals with it.
@@ -791,10 +792,9 @@ actor SyncEngine: ModelActor {
     func nextRetryDate() throws -> Date? {
         let retryable = OutboxOperation.Status.retryableFailure.rawValue
         let pending = OutboxOperation.Status.pending.rawValue
-        return try modelContext.fetch(FetchDescriptor<OutboxOperation>(
-            predicate: #Predicate { $0.statusRaw == retryable || $0.statusRaw == pending },
-            sortBy: [SortDescriptor(\.nextAttemptAt)]
-        )).first?.nextAttemptAt
+        return try store.fetch(OutboxOperation.self)
+            .filter { $0.statusRaw == retryable || $0.statusRaw == pending }
+            .min(by: { $0.nextAttemptAt < $1.nextAttemptAt })?.nextAttemptAt
     }
 
     // MARK: - Helpers
@@ -809,16 +809,16 @@ actor SyncEngine: ModelActor {
 
     func failedOperations() throws -> [FailedOperation] {
         let failed = OutboxOperation.Status.failed.rawValue
-        return try modelContext.fetch(FetchDescriptor<OutboxOperation>(
-            predicate: #Predicate { $0.statusRaw == failed },
-            sortBy: [SortDescriptor(\.createdAt, order: .reverse)]
-        )).map {
+        return try store.fetch(OutboxOperation.self)
+            .filter { $0.statusRaw == failed }
+            .sorted { $0.createdAt > $1.createdAt }
+            .map {
             FailedOperation(id: $0.id, kind: $0.kindRaw, errorCode: $0.lastErrorCode, createdAt: $0.createdAt, entityId: $0.entityId)
         }
     }
 
     func retryFailedOperation(_ id: UUID) throws {
-        guard let operation = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.id == id })).first,
+        guard let operation = try store.fetch(OutboxOperation.self).first(where: { $0.id == id }),
               operation.status == .failed,
               operation.lastErrorCode != "feature_not_available",
               operation.lastErrorCode != "ai_consent_required" else { return }
@@ -840,49 +840,49 @@ actor SyncEngine: ModelActor {
                 next.body = try APICoding.encoder.encode(update)
             }
         }
-        modelContext.delete(operation)
-        modelContext.insert(next)
+        store.delete(operation)
+        store.insert(next)
         if let entity = operation.entityId, let node = try node(id: entity) { node.syncIssueRaw = nil }
-        try modelContext.save()
+        try store.save()
     }
 
     func cancelFailedOperation(_ id: UUID) throws {
-        guard let operation = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.id == id })).first,
+        guard let operation = try store.fetch(OutboxOperation.self).first(where: { $0.id == id }),
               operation.status == .failed else { return }
         if operation.kind == .createNode, let entity = operation.entityId, let node = try node(id: entity) {
-            modelContext.delete(node)
+            store.delete(node)
             try deleteOccurrences(of: entity)
         } else if operation.kind == .acceptSuggestion,
                   let body = operation.body,
                   let accepted = try? APICoding.decoder.decode(AcceptSuggestionBody.self, from: body),
                   let node = try node(id: accepted.node.id) {
-            modelContext.delete(node)
+            store.delete(node)
         } else if operation.kind == .confirmAIDrafts {
             try rollBackConfirmation(operation)
         } else {
             try rollBack(operation)
         }
         if let entity = operation.entityId, let node = try node(id: entity) { node.syncIssueRaw = nil }
-        modelContext.delete(operation)
-        try modelContext.save()
+        store.delete(operation)
+        try store.save()
     }
 
     private func metadata() throws -> SyncMetadata {
-        if let existing = try modelContext.fetch(FetchDescriptor<SyncMetadata>()).first {
+        if let existing = try store.fetch(SyncMetadata.self).first {
             return existing
         }
         let created = SyncMetadata()
-        modelContext.insert(created)
+        store.insert(created)
         return created
     }
 
     private func connection(id: UUID) throws -> Connection? {
-        try modelContext.fetch(FetchDescriptor<Connection>(predicate: #Predicate { $0.id == id })).first
+        try store.fetch(Connection.self).first(where: { $0.id == id })
     }
 
     private func apply(_ dto: ConnectionDTO) throws {
         guard dto.status != "removed" else {
-            if let existing = try connection(id: dto.id) { modelContext.delete(existing) }
+            if let existing = try connection(id: dto.id) { store.delete(existing) }
             return
         }
         if let existing = try connection(id: dto.id) {
@@ -890,35 +890,35 @@ actor SyncEngine: ModelActor {
         } else {
             let created = Connection(id: dto.id, userId: dto.userId)
             created.apply(dto)
-            modelContext.insert(created)
+            store.insert(created)
         }
     }
 
     private func draftJob(id: UUID) throws -> AIDraftJob? {
-        try modelContext.fetch(FetchDescriptor<AIDraftJob>(predicate: #Predicate { $0.id == id })).first
+        try store.fetch(AIDraftJob.self).first(where: { $0.id == id })
     }
 
     private func suggestion(id: UUID) throws -> Suggestion? {
-        try modelContext.fetch(FetchDescriptor<Suggestion>(predicate: #Predicate { $0.id == id })).first
+        try store.fetch(Suggestion.self).first(where: { $0.id == id })
     }
 
     private func apply(_ dto: SuggestionDTO) throws {
         if let existing = try suggestion(id: dto.id) {
             existing.apply(dto)
         } else {
-            modelContext.insert(Suggestion(dto))
+            store.insert(Suggestion(dto))
         }
     }
 
     private func importJob(id: UUID) throws -> ImportJob? {
-        try modelContext.fetch(FetchDescriptor<ImportJob>(predicate: #Predicate { $0.id == id })).first
+        try store.fetch(ImportJob.self).first(where: { $0.id == id })
     }
 
     private func apply(_ dto: ImportJobDTO) throws {
         if let existing = try importJob(id: dto.id) {
             existing.apply(dto)
         } else {
-            modelContext.insert(ImportJob(dto))
+            store.insert(ImportJob(dto))
         }
     }
 
@@ -933,7 +933,7 @@ actor SyncEngine: ModelActor {
             // knew the text.
             job = AIDraftJob(transcript: "", timeZone: TimeZone(identifier: dto.timezone ?? "") ?? .current, referenceTime: dto.referenceTime ?? dto.createdAt ?? now())
             job.id = dto.id
-            modelContext.insert(job)
+            store.insert(job)
         }
         let isConfirming = try unfinishedEntities().contains(dto.id)
         if isConfirming && job.status == .confirmed && dto.status == "ready" { return }
@@ -941,18 +941,18 @@ actor SyncEngine: ModelActor {
     }
 
     private func node(id: UUID) throws -> ReminderNode? {
-        try modelContext.fetch(FetchDescriptor<ReminderNode>(predicate: #Predicate { $0.id == id })).first
+        try store.fetch(ReminderNode.self).first(where: { $0.id == id })
     }
 
     /// Entities with an operation that is still on its way.
     private func unfinishedEntities() throws -> Set<UUID> {
         let failed = OutboxOperation.Status.failed.rawValue
-        let operations = try modelContext.fetch(FetchDescriptor<OutboxOperation>(predicate: #Predicate { $0.statusRaw != failed }))
+        let operations = try store.fetch(OutboxOperation.self).filter { $0.statusRaw != failed }
         return Set(operations.compactMap(\.entityId))
     }
 
     private func deleteOccurrences(of nodeId: UUID) throws {
-        try modelContext.delete(model: ServerOccurrence.self, where: #Predicate { $0.nodeId == nodeId })
+        try store.deleteAll(ServerOccurrence.self) { $0.nodeId == nodeId }
     }
 
     static func occurrenceKey(inPath path: String) -> String? {

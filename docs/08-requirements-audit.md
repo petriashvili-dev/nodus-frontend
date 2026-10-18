@@ -10,9 +10,9 @@
 
 | Требование | Наблюдаемое поведение | Основные файлы |
 |---|---|---|
-| §3: локальное хранилище за `LocalStore` | UI использует `NodeRepository`, но `SyncEngine` работает напрямую со SwiftData `ModelContext`; общего протокола для локального хранилища нет. | `nodus/nodus/Repositories/NodeRepository.swift`, `nodus/nodus/Data/Sync/SyncEngine.swift` |
+| §3: локальное хранилище за `LocalStore` | `SyncEngine` использует протокол `LocalStore`; `SwiftDataLocalStore` — инфраструктурный адаптер. Страницы Delta Sync и операции Outbox сохраняют изменения и курсор одним `save` через адаптер. | `nodus/nodus/Services/LocalStore.swift`, `nodus/nodus/Data/Sync/SyncEngine.swift` |
 | §8: Live Activity | Удалена по прямому указанию владельца продукта. Виджет трёх узлов на сегодня оставлен. | `nodus/NodusWidgetExtension/NodusWidgetExtension.swift` |
 
 AI-продолжения, `suggestion`/`import_job` sync, серверный импорт/экспорт и общий список ошибок Outbox реализованы; см. [09-ai-continuations.md](09-ai-continuations.md) и [10-import-export.md](10-import-export.md). Для сетевых потоков добавлены unit-тесты с FakeTransport. Реальный backend E2E и визуальная проверка импортных экранов в симуляторе не запускались.
 
-Из требований остаётся перевести SyncEngine на настоящий `LocalStore` порт: сейчас он всё ещё выполняет SwiftData fetch/save напрямую. Косметическую обёртку над `ModelContext` вместо реальной границы хранения не вводил.
+Остальные известные расхождения закрыты в этой работе. Реальный backend E2E и визуальная проверка экранов импорта в симуляторе остаются непроведёнными проверками, а не изменениями реализации.

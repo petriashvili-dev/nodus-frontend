@@ -8,6 +8,8 @@ SwiftData — локальный кеш серверных данных плюс
 
 ## Хранилище
 
+`SyncEngine` зависит от протокола `LocalStore`, а SwiftData изолирована в `SwiftDataLocalStore`. Адаптер получает тот же сериализованный `ModelContext`, что и model actor синхронизации; операции `insert`/`delete` и изменение курсора фиксируются одним `save` на границах страницы sync или операции Outbox. Новые типы локальных записей подключаются через `LocalStoreRecord`. Тесты синхронизации продолжают использовать in-memory SwiftData контейнер через тот же адаптер.
+
 | Модель | Что хранит |
 |---|---|
 | `ReminderNode` | узел в модели приложения + серверное: `serverVersion` (0 — сервер ещё не подтвердил), `timeZoneIdentifier`, `ownerId`, `memberCount`, `isUndated`, `syncIssueRaw` |
