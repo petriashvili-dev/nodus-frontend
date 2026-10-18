@@ -109,8 +109,8 @@ SwiftData — локальный кеш серверных данных плюс
 
 - `NodeMapperTests` — сопоставление типов и правил, пояса, ключи.
 - `SyncEngineTests` — одна транзакция узла и операции, схлопывание, отправка с ключом, повтор после сети с тем же ключом, окончательность бизнес-ошибки, цепочка версий, конфликт личного узла, Delta Sync с курсором, overlay, однократная загрузка старых узлов.
-- `BackendIntegrationTests` — сквозной сценарий двух устройств против локального backend, по флагу:
+- `BackendIntegrationTests` — сквозные сценарии против локального backend, по флагу, последовательно (параллельные клоны симулятора упираются в серверные лимиты кодов). Для сценария восстановления сервер запускается с `EmailOtp__ReviewEmails__0=review@nodus.test` и `EmailOtp__ReviewCode=246810`:
   ```bash
-  TEST_RUNNER_NODUS_E2E=1 xcodebuild test -project nodus/nodus.xcodeproj -scheme nodus \
+  TEST_RUNNER_NODUS_E2E=1 xcodebuild test -project nodus/nodus.xcodeproj -scheme nodus -parallel-testing-enabled NO \
     -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -only-testing:nodusTests/BackendIntegrationTests
   ```

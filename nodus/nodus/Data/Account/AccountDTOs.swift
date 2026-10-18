@@ -23,3 +23,21 @@ nonisolated struct RegisterDeviceBody: Encodable, Sendable {
     var apnsEnvironment: String?
     var appVersion: String?
 }
+
+nonisolated struct EmailBody: Encodable, Sendable {
+    var email: String
+}
+
+nonisolated struct EmailCodeBody: Encodable, Sendable {
+    var email: String
+    var code: String
+}
+
+nonisolated struct RefreshTokenBody: Encodable, Sendable {
+    var refreshToken: String
+}
+
+nonisolated struct DisplayNameBody: Encodable, Sendable {
+    /// An empty name resets it.
+    var displayName: String
+}

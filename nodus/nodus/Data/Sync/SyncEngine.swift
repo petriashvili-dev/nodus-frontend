@@ -275,7 +275,7 @@ actor SyncEngine: ModelActor {
                 try metadata().sentTimeZone = sent
             }
             modelContext.delete(operation)
-        case .setAIConsent:
+        case .setAIConsent, .updateProfile:
             if let profile = try? APICoding.decoder.decode(UserProfileDTO.self, from: data) {
                 events.profile(profile)
             }
@@ -679,6 +679,25 @@ actor SyncEngine: ModelActor {
             try upsert(occurrence, inFeed: nil, inHorizon: true)
         }
         try modelContext.delete(model: ServerOccurrence.self, where: #Predicate { !$0.isInFeed && !$0.isInHorizon })
+        try modelContext.save()
+    }
+
+    /// Recovery, logout, deletion: everything of the previous account goes,
+    /// including its unsent operations. `userId` is the account the empty
+    /// cache now belongs to, so nothing is re-uploaded into it.
+    func wipeLocalData(for userId: UUID?) throws {
+        try modelContext.delete(model: OutboxOperation.self)
+        try modelContext.delete(model: ServerOccurrence.self)
+        try modelContext.delete(model: ReminderOccurrenceState.self)
+        try modelContext.delete(model: ReminderOccurrenceOverride.self)
+        try modelContext.delete(model: AIDraftJob.self)
+        try modelContext.delete(model: ReminderNode.self)
+        let metadata = try metadata()
+        metadata.cursor = nil
+        metadata.userId = userId
+        metadata.didQueueLegacyNodes = true
+        metadata.sentTimeZone = nil
+        metadata.lastSuccessAt = nil
         try modelContext.save()
     }
 

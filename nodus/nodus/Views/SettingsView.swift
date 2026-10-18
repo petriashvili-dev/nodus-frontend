@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     private enum Destination: String, Identifiable, Equatable {
-        case notifications, thread, app, archive, drafts
+        case account, notifications, thread, app, archive, drafts
 
         var id: String { rawValue }
     }
@@ -12,6 +12,12 @@ struct SettingsView: View {
     @ObservedObject var viewModel: HomeTimelineViewModel
     @ObservedObject var aiAccessStore: AIAccessStore
     @ObservedObject var aiDrafts: AIDraftsCoordinator
+    @ObservedObject var account: AccountService
+    @ObservedObject var appConfig: AppConfigStore
+    @State private var emailSheet: EmailCodeSheet.Mode?
+    @State private var displayName = ""
+    @State private var isConfirmingSignOut = false
+    @State private var isConfirmingDeletion = false
     @State private var reviewingJob: AIDraftJob?
     @State private var manualDraftJob: AIDraftJob?
     @State private var destination: Destination?
@@ -71,6 +77,37 @@ struct SettingsView: View {
                 aiDrafts.remove(job)
                 manualDraftJob = nil
             }
+        }
+        .sheet(item: Binding(
+            get: { emailSheet.map(EmailSheetItem.init) },
+            set: { emailSheet = $0?.mode }
+        )) { item in
+            EmailCodeSheet(mode: item.mode, language: settings.appLanguage, account: account) {
+                viewModel.presentToast(settings.appLanguage.localizedString(item.mode == .link ? "Account saved" : "Account restored"))
+            }
+        }
+        .alert(settings.appLanguage.localizedString("Sign out?"), isPresented: $isConfirmingSignOut) {
+            Button(settings.appLanguage.localizedString("Sign out"), role: .destructive) {
+                Task { await account.logout() }
+            }
+            Button(settings.appLanguage.localizedString("Cancel"), role: .cancel) {}
+        } message: {
+            Text(settings.appLanguage.localizedString("Knots will disappear from this device. Sign in with your email to see them again."))
+        }
+        .alert(settings.appLanguage.localizedString("Delete account?"), isPresented: $isConfirmingDeletion) {
+            Button(settings.appLanguage.localizedString("Delete account"), role: .destructive) {
+                Task {
+                    do {
+                        try await account.deleteAccount()
+                        viewModel.presentToast(settings.appLanguage.localizedString("Account deleted"))
+                    } catch {
+                        viewModel.presentToast(settings.appLanguage.localizedString("Deleting the account needs a connection"))
+                    }
+                }
+            }
+            Button(settings.appLanguage.localizedString("Cancel"), role: .cancel) {}
+        } message: {
+            Text(settings.appLanguage.localizedString("All your knots, drafts and connections will be deleted. Shared knots disappear for other participants too. This cannot be undone."))
         }
         .sheet(item: $editingPausedKnot) { knot in
             PauseUntilSheet(initialDate: knot.resumesAt) { date in
@@ -132,6 +169,7 @@ struct SettingsView: View {
 
     private var destinationTitle: String? {
         switch destination {
+        case .account: settings.appLanguage.localizedString("Account")
         case .notifications: settings.appLanguage.localizedString("Notifications")
         case .thread: settings.appLanguage.localizedString("Thread")
         case .app: "Приложение"
@@ -144,6 +182,11 @@ struct SettingsView: View {
     private var menu: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 0) {
+                SettingsMenuRow(title: settings.appLanguage.localizedString("Account")) {
+                    displayName = account.profile?.displayName ?? ""
+                    destination = .account
+                }
+
                 SettingsMenuRow(title: settings.appLanguage.localizedString("Notifications")) {
                     destination = .notifications
                 }
@@ -182,6 +225,8 @@ struct SettingsView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 16) {
                 switch destination {
+                case .account:
+                    accountSection
                 case .notifications:
                     notificationsSection
                 case .thread:
@@ -271,6 +316,64 @@ struct SettingsView: View {
                 )
             }
         }
+    }
+
+    private var accountSection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            NodusSheetSection {
+                NodusInfoRow(
+                    title: LocalizedStringKey(settings.appLanguage.localizedString("Account")),
+                    value: account.profile?.email ?? settings.appLanguage.localizedString("Anonymous")
+                )
+                NodusTextField(
+                    title: LocalizedStringKey(settings.appLanguage.localizedString("Name")),
+                    placeholder: LocalizedStringKey(settings.appLanguage.localizedString("How your connections see you")),
+                    text: $displayName,
+                    submitLabel: .done,
+                    onSubmit: saveDisplayName
+                )
+                .onChange(of: displayName) { _, name in
+                    let limit = appConfig.config.limits.displayNameMaxChars
+                    if name.count > limit { displayName = String(name.prefix(limit)) }
+                }
+            }
+
+            if account.isAnonymous {
+                Text(settings.appLanguage.localizedString("An anonymous account lives only on this device. Save it with an email to keep your knots after reinstalling."))
+                    .font(.system(size: 13))
+                    .foregroundStyle(NodusPalette.secondary.opacity(0.78))
+                NodusActionButton(title: LocalizedStringKey(settings.appLanguage.localizedString("Save account")), systemName: "envelope", tone: .primary) {
+                    emailSheet = .link
+                }
+            }
+
+            NodusActionButton(title: LocalizedStringKey(settings.appLanguage.localizedString("Restore account")), systemName: "arrow.uturn.backward") {
+                emailSheet = .recover
+            }
+
+            NodusSheetSection {
+                NodusLinkRow(title: LocalizedStringKey(settings.appLanguage.localizedString("Privacy policy")), destination: appConfig.config.privacyPolicyURL)
+                NodusLinkRow(title: LocalizedStringKey(settings.appLanguage.localizedString("Terms of use")), destination: appConfig.config.termsURL)
+                NodusLinkRow(title: LocalizedStringKey(settings.appLanguage.localizedString("Contact support")), destination: appConfig.config.supportURL)
+            }
+
+            if !account.isAnonymous {
+                NodusActionButton(title: LocalizedStringKey(settings.appLanguage.localizedString("Sign out")), systemName: "rectangle.portrait.and.arrow.right") {
+                    isConfirmingSignOut = true
+                }
+            }
+
+            NodusActionButton(title: LocalizedStringKey(settings.appLanguage.localizedString("Delete account")), systemName: "trash", tone: .destructive) {
+                isConfirmingDeletion = true
+            }
+        }
+        .onDisappear(perform: saveDisplayName)
+    }
+
+    private func saveDisplayName() {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed != (account.profile?.displayName ?? "") else { return }
+        try? account.updateDisplayName(trimmed)
     }
 
     private var draftsSection: some View {
@@ -383,6 +486,11 @@ struct SettingsView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
+}
+
+private struct EmailSheetItem: Identifiable {
+    let mode: EmailCodeSheet.Mode
+    var id: String { mode == .link ? "link" : "recover" }
 }
 
 /// One voice note in "Drafts" with what can be done about it now.

@@ -17,6 +17,7 @@ struct BackendIntegrationTests {
         let engine: SyncEngine
         let service: ReminderService
         let api: APIClient
+        let session: AuthSession
 
         var context: ModelContext { container.mainContext }
     }
@@ -35,7 +36,65 @@ struct BackendIntegrationTests {
             repository: SwiftDataNodeRepository(context: container.mainContext),
             notificationScheduler: SilentNotifications()
         )
-        return Device(container: container, engine: engine, service: service, api: api)
+        return Device(container: container, engine: engine, service: service, api: api, session: session)
+    }
+
+    private func makeAccount(_ device: Device, store: InMemorySecureStore) -> AccountService {
+        let account = AccountService(api: device.api, session: device.session, store: store, aiAccessStore: AIAccessStore(defaults: UserDefaults(suiteName: UUID().uuidString)!))
+        account.resetLocalData = { userId in try? await device.engine.wipeLocalData(for: userId) }
+        return account
+    }
+
+    /// Needs the backend started with `EmailOtp__ReviewEmails__0=review@nodus.test`
+    /// and `EmailOtp__ReviewCode=246810` (the App Review demo mechanism).
+    @Test func savedAccountIsRestoredOnANewDevice() async throws {
+        let email = "review@nodus.test"
+        let code = "246810"
+
+        let oldStore = InMemorySecureStore()
+        let old = try makeDevice(store: oldStore)
+        let knot = try await old.service.tie(
+            ReminderDraft(title: "Купить подарок", note: "", scheduledAt: Date().addingTimeInterval(7200).roundedToNearest5Minutes(), repeatSchedule: .none, leadTimes: []),
+            settings: .testDefault
+        )
+        #expect(await old.engine.runCycle(timeZone: zone) == .completed)
+        let oldAccount = makeAccount(old, store: oldStore)
+        // The server issues one code per address per minute, whatever the
+        // purpose. The address stays linked between runs, so the old device
+        // first tries to sign in to it and links it only on the first run.
+        do {
+            try await oldAccount.startRecovery(email)
+            try await oldAccount.completeRecovery(email, code: code)
+            _ = try await old.service.tie(
+                ReminderDraft(title: "Купить подарок", note: "", scheduledAt: Date().addingTimeInterval(7200).roundedToNearest5Minutes(), repeatSchedule: .none, leadTimes: []),
+                settings: .testDefault
+            )
+            #expect(await old.engine.runCycle(timeZone: zone) == .completed)
+        } catch AccountService.EmailError.invalidCode {
+            try await Task.sleep(for: .seconds(61))
+            try await oldAccount.startLinkingEmail(email)
+            try await oldAccount.verifyLinkingEmail(email, code: code)
+        }
+        try await Task.sleep(for: .seconds(61))
+
+        let newStore = InMemorySecureStore()
+        let fresh = try makeDevice(store: newStore)
+        let anonymousKnot = try await fresh.service.tie(
+            ReminderDraft(title: "Анонимный узел", note: "", scheduledAt: Date().addingTimeInterval(3600).roundedToNearest5Minutes(), repeatSchedule: .none, leadTimes: []),
+            settings: .testDefault
+        )
+        #expect(await fresh.engine.runCycle(timeZone: zone) == .completed)
+
+        let freshAccount = makeAccount(fresh, store: newStore)
+        try await freshAccount.startRecovery(email)
+        try await freshAccount.completeRecovery(email, code: code)
+        #expect(await fresh.engine.runCycle(timeZone: zone) == .completed)
+
+        let titles = try fresh.context.fetch(FetchDescriptor<ReminderNode>()).map(\.title)
+        #expect(titles.contains("Купить подарок"))
+        #expect(!titles.contains("Анонимный узел"))
+        #expect(!(try fresh.context.fetch(FetchDescriptor<ReminderNode>()).contains { $0.id == anonymousKnot.id }))
+        _ = knot
     }
 
     @Test func knotsMakeTheRoundTripBetweenTwoDevices() async throws {

@@ -5,6 +5,8 @@ struct HomeTimelineView: View {
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var aiAccessStore: AIAccessStore
     @ObservedObject var aiDrafts: AIDraftsCoordinator
+    let account: AccountService
+    let appConfig: AppConfigStore
     let privacyPolicyURL: URL
     let visible: Bool
     @Binding var openVoiceComposerFromControl: Bool
@@ -135,7 +137,9 @@ struct HomeTimelineView: View {
                 settings: settingsStore,
                 viewModel: viewModel,
                 aiAccessStore: aiAccessStore,
-                aiDrafts: aiDrafts
+                aiDrafts: aiDrafts,
+                account: account,
+                appConfig: appConfig
             )
         }
         .sheet(isPresented: $aiDrafts.isShowingConsent) {

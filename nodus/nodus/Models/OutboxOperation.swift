@@ -25,6 +25,7 @@ nonisolated final class OutboxOperation {
         case setAIConsent
         case confirmAIDrafts
         case cancelAIDrafts
+        case updateProfile
     }
 
     @Attribute(.unique) var id: UUID

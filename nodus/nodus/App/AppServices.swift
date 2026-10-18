@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UserNotifications
 
 /// The app's long-lived services, created once at launch. Views receive what
 /// they need from here; nothing in it is a view model.
@@ -18,6 +19,8 @@ final class AppServices {
     let account: AccountService
     let sync: SyncCoordinator
     let aiDrafts: AIDraftsCoordinator
+    /// A short message on the current screen; set by `ContentView`.
+    var presentToast: (String) -> Void = { _ in }
 
     init(
         configuration: APIConfiguration = .live,
@@ -73,9 +76,34 @@ final class AppServices {
             didEnqueue: { [sync] in sync.localChangeQueued() }
         ))
 
+        let mainContext = self.modelContainer.mainContext
+        account.enqueue = { [sync] operation in
+            mainContext.insert(operation)
+            try mainContext.save()
+            sync.localChangeQueued()
+        }
+        account.resetLocalData = { [sync] userId in
+            try? await engine.wipeLocalData(for: userId)
+            let center = UNUserNotificationCenter.current()
+            center.removeAllPendingNotificationRequests()
+            center.removeAllDeliveredNotifications()
+            sync.onDataChanged()
+            sync.requestSync()
+        }
+
         relay.profile = { [account] in account.apply($0) }
         relay.accessRefused = { [account] in Task { await account.refresh() } }
-        relay.sessionLost = { [sync] _ in sync.requestSync() }
+        relay.sessionLost = { [weak self, account, sync] loss in
+            switch loss {
+            case .sessionEnded:
+                account.isSessionEnded = true
+            case .anonymousAccountReplaced:
+                // The old anonymous account is unreachable; this device's
+                // knots are uploaded into the new one by the next sync.
+                self?.presentToast(AppLanguage.defaultValue.localizedString("The previous session was lost. Knots on this device are kept"))
+                sync.requestSync()
+            }
+        }
         relay.syncSignal = { [sync] in sync.requestSync() }
     }
 }

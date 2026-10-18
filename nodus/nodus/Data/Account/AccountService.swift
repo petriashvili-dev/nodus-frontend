@@ -1,11 +1,22 @@
 import Foundation
+import Combine
+import SwiftData
 import os
 
 /// Brings the account up to date: creates the anonymous account on first
 /// network access, registers the device and loads the profile. The profile
 /// is the only source of AI access (docs/01-ai-access.md).
 @MainActor
-final class AccountService {
+final class AccountService: ObservableObject {
+    nonisolated enum EmailError: Error, Equatable {
+        case invalidEmail
+        case invalidCode
+        case alreadyLinked
+        case tooManyRequests
+        case offline
+        case failed
+    }
+
     private let api: APIClient
     private let session: AuthSession
     private let store: SecureStore
@@ -13,7 +24,14 @@ final class AccountService {
     private let appVersion: String?
     private let logger = Logger(subsystem: "app.nodus", category: "Account")
 
-    private(set) var profile: UserProfileDTO?
+    @Published private(set) var profile: UserProfileDTO?
+    /// An email account's session ended; the user is asked to sign in.
+    @Published var isSessionEnded = false
+    /// Wipes the local cache, notifications and widgets for a new account
+    /// (or none); set by `AppServices`.
+    var resetLocalData: (UUID?) async -> Void = { _ in }
+    /// Enqueues an Outbox operation on the main store; set by `AppServices`.
+    var enqueue: (OutboxOperation) throws -> Void = { _ in }
     private var refreshTask: Task<Void, Never>?
     private var registeredDeviceKey: String?
 
@@ -55,6 +73,128 @@ final class AccountService {
         aiAccessStore.apply(profile.aiAccess)
         let isAnonymous = profile.isAnonymous
         Task { [session] in try? await session.setAnonymous(isAnonymous) }
+    }
+
+    var isAnonymous: Bool {
+        profile?.isAnonymous ?? true
+    }
+
+    // MARK: - Display name
+
+    /// `PATCH /me` through the Outbox; the name shows at once.
+    func updateDisplayName(_ name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if var current = profile {
+            current.displayName = trimmed.isEmpty ? nil : trimmed
+            profile = current
+        }
+        try enqueue(OutboxOperation(
+            kind: .updateProfile, method: .patch, path: "me",
+            body: try APICoding.encoder.encode(DisplayNameBody(displayName: trimmed)),
+            entityId: nil
+        ))
+    }
+
+    // MARK: - Linking an email ("Save account")
+
+    /// The answer is the same for any address; a code goes to the email.
+    func startLinkingEmail(_ email: String) async throws {
+        try await emailRequest {
+            _ = try await self.api.send(try APIRequest<EmptyResponse>(method: .post, path: "auth/email/start", json: EmailBody(email: email)))
+        }
+    }
+
+    /// The same account, now with an email: `UserId` and data stay.
+    func verifyLinkingEmail(_ email: String, code: String) async throws {
+        try await emailRequest {
+            let profile = try await self.api.send(try APIRequest<UserProfileDTO>(
+                method: .post, path: "auth/email/verify", json: EmailCodeBody(email: email, code: code)
+            ))
+            self.apply(profile)
+        }
+    }
+
+    // MARK: - Recovery ("Restore account")
+
+    func startRecovery(_ email: String) async throws {
+        try await emailRequest {
+            _ = try await self.api.send(try APIRequest<EmptyResponse>(
+                method: .post, path: "auth/email/sign-in/start", json: EmailBody(email: email), requiresAuth: false
+            ))
+        }
+    }
+
+    /// Signs in to the account behind the email. The anonymous account of
+    /// this device is not merged: its local data is replaced (the user was
+    /// warned), then the restored account arrives through a snapshot.
+    func completeRecovery(_ email: String, code: String) async throws {
+        try await emailRequest {
+            let tokens = try await self.api.send(try APIRequest<AuthTokens>(
+                method: .post, path: "auth/email/sign-in/verify", json: EmailCodeBody(email: email, code: code), requiresAuth: false
+            ))
+            try await self.session.adopt(tokens, isAnonymous: false)
+            self.isSessionEnded = false
+            self.registeredDeviceKey = nil
+            self.profile = nil
+            self.aiAccessStore.apply(.none)
+            await self.resetLocalData(tokens.userId)
+            await self.refresh()
+        }
+    }
+
+    // MARK: - Logout and deletion
+
+    /// `POST /auth/logout`, `DELETE /devices/{id}`, then the device forgets
+    /// the account. Offline the server session simply expires.
+    func logout() async {
+        if let refreshToken = await session.currentRefreshToken {
+            _ = try? await api.send(try APIRequest<EmptyResponse>(
+                method: .post, path: "auth/logout", json: RefreshTokenBody(refreshToken: refreshToken), requiresAuth: false
+            ))
+        }
+        if let installation = try? store.installationId() {
+            _ = try? await api.send(APIRequest<EmptyResponse>(method: .delete, path: "devices/\(installation.uuidString)"))
+        }
+        await forgetAccount()
+    }
+
+    /// `DELETE /me` — online only, not through the Outbox. `401` after a
+    /// lost response means the account is already gone.
+    func deleteAccount() async throws {
+        do {
+            _ = try await api.send(APIRequest<EmptyResponse>(method: .delete, path: "me"))
+        } catch let error as APIError where error.status == 401 || error.code == "invalid_refresh_token" {
+            // Already deleted.
+        } catch APIError.sessionEnded {
+            // Already deleted.
+        } catch let error as APIError where error.isOffline {
+            throw EmailError.offline
+        }
+        await forgetAccount()
+    }
+
+    private func forgetAccount() async {
+        try? await session.clear()
+        profile = nil
+        registeredDeviceKey = nil
+        isSessionEnded = false
+        aiAccessStore.apply(.none)
+        await resetLocalData(nil)
+    }
+
+    private func emailRequest(_ body: () async throws -> Void) async throws {
+        do {
+            try await body()
+        } catch let error as APIError {
+            switch (error.status, error.code) {
+            case (_, _) where error.isOffline: throw EmailError.offline
+            case (_, "invalid_code"): throw EmailError.invalidCode
+            case (_, "email_already_linked"): throw EmailError.alreadyLinked
+            case (_, "validation_failed"): throw EmailError.invalidEmail
+            case (429, _): throw EmailError.tooManyRequests
+            default: throw EmailError.failed
+            }
+        }
     }
 
     private func performRefresh() async {

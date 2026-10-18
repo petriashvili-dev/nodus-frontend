@@ -20,11 +20,13 @@ struct ContentView: View {
 
     let services: AppServices
     @ObservedObject private var appConfig: AppConfigStore
+    @ObservedObject private var account: AccountService
     let notificationHandler: NotificationActionHandler
 
     init(services: AppServices, notificationHandler: NotificationActionHandler = NotificationActionHandler()) {
         self.services = services
         appConfig = services.appConfig
+        account = services.account
         self.notificationHandler = notificationHandler
     }
 
@@ -48,6 +50,8 @@ struct ContentView: View {
                         settingsStore: settingsStore,
                         aiAccessStore: services.aiAccessStore,
                         aiDrafts: services.aiDrafts,
+                        account: services.account,
+                        appConfig: services.appConfig,
                         privacyPolicyURL: appConfig.config.privacyPolicyURL,
                         visible: homeVisible,
                         openVoiceComposerFromControl: $openVoiceComposerFromControl
@@ -55,6 +59,9 @@ struct ContentView: View {
                         .transition(.opacity.animation(.easeInOut(duration: 1.1)))
                 }
             }
+        }
+        .sheet(isPresented: $account.isSessionEnded) {
+            SessionEndedView(language: settingsStore.appLanguage, account: account)
         }
         .overlay {
             if appConfig.requiresUpdate {
@@ -169,6 +176,7 @@ struct ContentView: View {
             aiDrafts.dataChanged()
         }
         services.aiDrafts.toast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
+        services.presentToast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
         services.sync.start()
 
         notificationHandler.setActionHandler { action, nodeId, occurrenceDate in
