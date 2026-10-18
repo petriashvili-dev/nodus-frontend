@@ -14,6 +14,22 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
 
     private var onAction: ((Action, UUID, Date?) async -> Void)?
     private var pendingActions: [(Action, UUID, Date?)] = []
+    /// Remote pushes (APNs) — `true` for a tap, `false` while in foreground.
+    private var onPush: ((PushPayload, Bool) async -> Void)?
+    private var pendingTaps: [PushPayload] = []
+
+    /// Installs the push router; replays a tap that launched the app.
+    @MainActor
+    func setPushHandler(_ handler: @escaping (PushPayload, Bool) async -> Void) {
+        onPush = handler
+        let queued = pendingTaps
+        pendingTaps.removeAll()
+        Task { @MainActor in
+            for payload in queued {
+                await handler(payload, true)
+            }
+        }
+    }
 
     /// Installs the UI-side action handler and replays actions received while
     /// SwiftUI was still building the scene after a cold launch.
@@ -36,6 +52,18 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        if let payload = PushPayload(userInfo: userInfo) {
+            Task { @MainActor in
+                guard let onPush else {
+                    pendingTaps.append(payload)
+                    completionHandler()
+                    return
+                }
+                await onPush(payload, true)
+                completionHandler()
+            }
+            return
+        }
         guard let nodeIdString = userInfo["nodeId"] as? String, let nodeId = UUID(uuidString: nodeIdString) else {
             completionHandler()
             return
@@ -88,6 +116,13 @@ final class NotificationActionHandler: NSObject, UNUserNotificationCenterDelegat
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        // A push about something the open app shows by itself becomes a
+        // branded toast instead of a duplicate system banner.
+        if let payload = PushPayload(userInfo: notification.request.content.userInfo) {
+            Task { @MainActor in await onPush?(payload, false) }
+            completionHandler([])
+            return
+        }
         completionHandler([.banner, .sound, .list])
     }
 

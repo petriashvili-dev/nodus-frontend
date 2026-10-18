@@ -24,6 +24,21 @@ final class NodusAppDelegate: NSObject, UIApplicationDelegate {
         UNUserNotificationCenter.current().delegate = notificationHandler
         return true
     }
+
+    /// The APNs token goes to `POST /devices`; registration is repeated on
+    /// every launch, so a changed token is always sent.
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        let token = deviceToken.map { String(format: "%02x", $0) }.joined()
+        Task { @MainActor in
+            let account = AppServices.shared.account
+            account.apnsToken = token
+            await account.refresh()
+        }
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // Push is optional: everything it announces also arrives through sync.
+    }
 }
 
 @main

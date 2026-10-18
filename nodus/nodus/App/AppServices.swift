@@ -19,6 +19,7 @@ final class AppServices {
     let account: AccountService
     let sync: SyncCoordinator
     let aiDrafts: AIDraftsCoordinator
+    let push = PushRouter()
     /// A short message on the current screen; set by `ContentView`.
     var presentToast: (String) -> Void = { _ in }
 

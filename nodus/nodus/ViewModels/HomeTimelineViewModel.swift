@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import CoreGraphics
 import Combine
 import SwiftData
@@ -260,7 +261,10 @@ final class HomeTimelineViewModel: ObservableObject {
         guard var draft = permissionPromptDraft else { return }
         permissionPromptDraft = nil
         let granted = await notificationScheduler.requestAuthorization()
-        if !granted {
+        if granted {
+            // The same permission covers pushes about shared knots and drafts.
+            UIApplication.shared.registerForRemoteNotifications()
+        } else {
             draft.leadTimes = []
         }
         await tie(draft)
@@ -404,6 +408,13 @@ final class HomeTimelineViewModel: ObservableObject {
         } else {
             selectedItem = allItems.first { $0.nodeId == nodeId }
         }
+    }
+
+    /// A push about a node: opens it if it is still here after sync.
+    func openNode(_ nodeId: UUID) -> Bool {
+        guard cachedNodes.contains(where: { $0.id == nodeId }) else { return false }
+        presentDetail(nodeId: nodeId, occurrenceDate: nil)
+        return true
     }
 
     func presentActionMenu(for item: TimelineItem, anchor: CGRect) {

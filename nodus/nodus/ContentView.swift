@@ -1,6 +1,7 @@
 import SwiftData
 import SwiftUI
 import UserNotifications
+import UIKit
 
 struct ContentView: View {
     @Environment(\.modelContext) private var modelContext
@@ -85,6 +86,7 @@ struct ContentView: View {
             // catch up in the background.
             Task { await services.account.refresh() }
             services.sync.enterForeground()
+            Task { await registerForPushIfAllowed() }
             Task {
                 await appConfig.refresh()
                 if appConfig.shouldOfferUpdate() {
@@ -148,6 +150,14 @@ struct ContentView: View {
         }
     }
 
+    /// Remote notifications only after the user allowed notifications in
+    /// context; a refusal blocks nothing (push only announces sync data).
+    private func registerForPushIfAllowed() async {
+        let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+        guard [.authorized, .provisional, .ephemeral].contains(status) else { return }
+        UIApplication.shared.registerForRemoteNotifications()
+    }
+
     private func configureIfNeeded() {
         guard viewModel == nil else { return }
 
@@ -177,6 +187,20 @@ struct ContentView: View {
         }
         services.aiDrafts.toast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
         services.presentToast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
+
+        services.push.destinations = PushRouter.Destinations(
+            sync: { [sync = services.sync] in await sync.syncNow() },
+            toast: { [weak createdViewModel] in createdViewModel?.presentToast($0) },
+            openDraftsReview: { [aiDrafts = services.aiDrafts] in aiDrafts.openJob(id: $0) },
+            openNode: { [weak createdViewModel] in createdViewModel?.openNode($0) ?? false }
+        )
+        notificationHandler.setPushHandler { [push = services.push] payload, isTap in
+            if isTap {
+                await push.tapped(payload)
+            } else {
+                await push.received(payload)
+            }
+        }
         services.sync.start()
 
         notificationHandler.setActionHandler { action, nodeId, occurrenceDate in
