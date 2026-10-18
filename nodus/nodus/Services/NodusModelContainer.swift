@@ -11,6 +11,7 @@ enum NodusModelContainer {
             OutboxOperation.self,
             SyncMetadata.self,
             ServerOccurrence.self,
+            AIDraftJob.self,
         ])
         let configuration = ModelConfiguration(
             schema: schema,

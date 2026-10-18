@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
     private enum Destination: String, Identifiable, Equatable {
-        case notifications, thread, app, archive
+        case notifications, thread, app, archive, drafts
 
         var id: String { rawValue }
     }
@@ -10,6 +10,10 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: HomeTimelineViewModel
+    @ObservedObject var aiAccessStore: AIAccessStore
+    @ObservedObject var aiDrafts: AIDraftsCoordinator
+    @State private var reviewingJob: AIDraftJob?
+    @State private var manualDraftJob: AIDraftJob?
     @State private var destination: Destination?
     @State private var archiveForExport: NodusArchive?
     @State private var isExportingArchive = false
@@ -48,6 +52,26 @@ struct SettingsView: View {
             }
         }
         .animation(.easeInOut(duration: 0.22), value: destination)
+        .sheet(item: $reviewingJob) { job in
+            AIDraftsReviewView(
+                job: job,
+                language: settings.appLanguage,
+                quickPresetSettings: settings.snapshot,
+                confirm: { aiDrafts.confirm(job, drafts: $0) },
+                cancelJob: { aiDrafts.cancel(job) }
+            )
+        }
+        .sheet(item: $manualDraftJob) { job in
+            // "Create manually" after the model could not help.
+            ReminderEditorView(
+                draft: ReminderDraft(title: String(job.transcript.prefix(200))),
+                quickPresetSettings: settings.snapshot
+            ) { draft in
+                await viewModel.saveDraft(draft)
+                aiDrafts.remove(job)
+                manualDraftJob = nil
+            }
+        }
         .sheet(item: $editingPausedKnot) { knot in
             PauseUntilSheet(initialDate: knot.resumesAt) { date in
                 await viewModel.pause(nodeId: knot.nodeId, until: date)
@@ -112,6 +136,7 @@ struct SettingsView: View {
         case .thread: settings.appLanguage.localizedString("Thread")
         case .app: "Приложение"
         case .archive: "Импорт и экспорт"
+        case .drafts: settings.appLanguage.localizedString("Drafts")
         case nil: nil
         }
     }
@@ -135,6 +160,15 @@ struct SettingsView: View {
                     destination = .archive
                 }
 
+                // Drafts stay reachable for unfinished jobs even after the
+                // feature is withdrawn.
+                if aiAccessStore.access.isAvailable(.drafts) || !aiDrafts.jobs.isEmpty {
+                    SettingsMenuRow(title: settings.appLanguage.localizedString("Drafts")) {
+                        aiDrafts.refreshJobs()
+                        destination = .drafts
+                    }
+                }
+
                 NodusWaveDivider().padding(.top, 32)
             }
             .padding(.horizontal, 24)
@@ -156,6 +190,8 @@ struct SettingsView: View {
                     appSection
                 case .archive:
                     archiveSection
+                case .drafts:
+                    draftsSection
                 }
             }
             .padding(.horizontal, 24)
@@ -223,6 +259,39 @@ struct SettingsView: View {
             NodusToggleRow(title: "Анимированная заставка", subtitle: "Показывать анимацию при запуске приложения", hapticsEnabled: settings.hapticsEnabled, isOn: $settings.animatedSplashEnabled)
             NodusToggleRow(title: "Тактильный отклик", subtitle: "Использовать лёгкую вибрацию при действиях в приложении", hapticsEnabled: settings.hapticsEnabled, isOn: $settings.hapticsEnabled)
             NodusToggleRow(title: "Звуки в приложении", subtitle: "Воспроизводить тихие звуки при действиях в приложении", hapticsEnabled: settings.hapticsEnabled, isOn: $settings.inAppSoundsEnabled)
+            if aiAccessStore.access.hasAnyFeature {
+                NodusToggleRow(
+                    title: LocalizedStringKey(settings.appLanguage.localizedString("AI assistant")),
+                    subtitle: LocalizedStringKey(settings.appLanguage.localizedString("Send your notes and knot titles to an AI model through Nodus to get drafts and suggestions")),
+                    hapticsEnabled: settings.hapticsEnabled,
+                    isOn: Binding(
+                        get: { aiAccessStore.access.hasConsent },
+                        set: { aiDrafts.setConsent($0) }
+                    )
+                )
+            }
+        }
+    }
+
+    private var draftsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if aiDrafts.jobs.isEmpty {
+                Text(settings.appLanguage.localizedString("No drafts"))
+                    .font(.system(size: 14))
+                    .foregroundStyle(NodusPalette.secondary.opacity(0.72))
+            } else {
+                ForEach(aiDrafts.jobs) { job in
+                    DraftJobRow(
+                        job: job,
+                        status: aiDrafts.statusMessage(for: job),
+                        language: settings.appLanguage,
+                        review: { reviewingJob = job },
+                        resend: { Task { await aiDrafts.resubmit(job) } },
+                        createManually: { manualDraftJob = job },
+                        remove: { job.isOnServer && job.status == .ready ? aiDrafts.cancel(job) : aiDrafts.remove(job) }
+                    )
+                }
+            }
         }
     }
 
@@ -314,6 +383,48 @@ struct SettingsView: View {
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter
     }()
+}
+
+/// One voice note in "Drafts" with what can be done about it now.
+private struct DraftJobRow: View {
+    let job: AIDraftJob
+    let status: String
+    let language: AppLanguage
+    let review: () -> Void
+    let resend: () -> Void
+    let createManually: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        NodusSheetSection {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(job.transcript.isEmpty ? language.localizedString("Voice note") : job.transcript)
+                    .font(.cormorant(18, weight: .regular))
+                    .foregroundStyle(NodusPalette.primary.opacity(0.92))
+                    .lineLimit(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(NodusPalette.secondary.opacity(0.72))
+            }
+
+            switch job.status {
+            case .ready:
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Review")), systemName: "checklist", tone: .primary, action: review)
+            case .unsent:
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Send")), systemName: "paperplane", tone: .primary, action: resend)
+            case .failed where job.errorCode != "nothing_recognized" && !job.transcript.isEmpty:
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Try again")), systemName: "arrow.clockwise", tone: .primary, action: resend)
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Create manually")), systemName: "square.and.pencil", action: createManually)
+            default:
+                EmptyView()
+            }
+
+            if job.status != .queued && job.status != .processing {
+                NodusActionButton(title: LocalizedStringKey(language.localizedString("Delete")), systemName: "trash", tone: .destructive, action: remove)
+            }
+        }
+    }
 }
 
 private struct SettingsMenuRow: View {

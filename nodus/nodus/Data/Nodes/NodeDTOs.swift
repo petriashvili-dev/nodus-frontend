@@ -132,6 +132,7 @@ nonisolated struct SnapshotDTO: Decodable, Sendable {
     var user: UserProfileDTO?
     var nodes: [NodeDTO]
     var occurrenceStates: [OccurrenceStateDTO]?
+    var aiDraftJobs: [AIDraftJobDTO]?
 }
 
 nonisolated struct FeedItemDTO: Decodable, Sendable {

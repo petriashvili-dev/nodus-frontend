@@ -4,6 +4,8 @@ struct HomeTimelineView: View {
     @ObservedObject var viewModel: HomeTimelineViewModel
     @ObservedObject var settingsStore: SettingsStore
     @ObservedObject var aiAccessStore: AIAccessStore
+    @ObservedObject var aiDrafts: AIDraftsCoordinator
+    let privacyPolicyURL: URL
     let visible: Bool
     @Binding var openVoiceComposerFromControl: Bool
     @State private var currentDate = Date()
@@ -23,9 +25,22 @@ struct HomeTimelineView: View {
                 VoiceInputComposer(
                     speech: speech,
                     language: settingsStore.appLanguage,
-                    isSubmitting: false,
+                    isSubmitting: aiDrafts.phase == .sending,
                     cancel: dismissVoiceComposer,
                     submit: submitVoiceTranscript
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 18)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .zIndex(8)
+            }
+
+            if isShowingWaitingCard {
+                AIDraftsWaitingCard(
+                    language: settingsStore.appLanguage,
+                    isAccepted: aiDrafts.phase != .sending,
+                    close: { aiDrafts.closeWaiting() }
                 )
                 .padding(.horizontal, 20)
                 .padding(.bottom, 18)
@@ -65,6 +80,7 @@ struct HomeTimelineView: View {
         }
         .animation(.easeOut(duration: 0.8).delay(0.18), value: viewModel.toast?.id)
         .animation(.spring(duration: 0.32, bounce: 0.16), value: isShowingVoiceComposer)
+        .animation(.spring(duration: 0.32, bounce: 0.16), value: aiDrafts.phase)
         // The card's frame is captured (in MomentRow) and later used to
         // position the lifted copy in the overlay above. `.global` doesn't
         // work for that: it's the window's coordinate space, not this
@@ -115,7 +131,29 @@ struct HomeTimelineView: View {
             }
         }
         .sheet(isPresented: $viewModel.isShowingSettings) {
-            SettingsView(settings: settingsStore, viewModel: viewModel)
+            SettingsView(
+                settings: settingsStore,
+                viewModel: viewModel,
+                aiAccessStore: aiAccessStore,
+                aiDrafts: aiDrafts
+            )
+        }
+        .sheet(isPresented: $aiDrafts.isShowingConsent) {
+            AIConsentView(
+                language: settingsStore.appLanguage,
+                privacyPolicyURL: privacyPolicyURL,
+                allow: { await aiDrafts.consentGranted() },
+                decline: { aiDrafts.consentDeclined() }
+            )
+        }
+        .sheet(item: $aiDrafts.reviewJob) { job in
+            AIDraftsReviewView(
+                job: job,
+                language: settingsStore.appLanguage,
+                quickPresetSettings: settingsStore.snapshot,
+                confirm: { aiDrafts.confirm(job, drafts: $0) },
+                cancelJob: { aiDrafts.cancel(job) }
+            )
         }
         .sheet(isPresented: $isShowingVoicePermissionPrimer) {
             VoicePermissionPromptView(language: settingsStore.appLanguage) {
@@ -317,6 +355,16 @@ struct HomeTimelineView: View {
         aiAccessStore.access.isAvailable(.drafts)
     }
 
+    /// After the composer closed: while the request is on its way (for
+    /// example right after consent) and until the drafts are ready.
+    private var isShowingWaitingCard: Bool {
+        switch aiDrafts.phase {
+        case .idle: false
+        case .sending: !isShowingVoiceComposer
+        case .waiting: true
+        }
+    }
+
     private var voiceComposerAction: (() -> Void)? {
         guard canUseVoiceDrafts else { return nil }
         return openVoiceComposer
@@ -344,7 +392,7 @@ struct HomeTimelineView: View {
 
     private func submitVoiceTranscript(_ transcript: String) {
         Task {
-            if await viewModel.submitVoiceTranscript(transcript) {
+            if await aiDrafts.submit(transcript) {
                 dismissVoiceComposer()
             }
         }

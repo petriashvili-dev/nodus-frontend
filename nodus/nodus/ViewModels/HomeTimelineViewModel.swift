@@ -273,16 +273,6 @@ final class HomeTimelineViewModel: ObservableObject {
         await tie(draft)
     }
 
-    /// Voice text becomes knots only through the backend AI drafts flow
-    /// (`POST /v1/ai/node-drafts`) — the client never calls a model itself.
-    /// Until that flow is connected the entry point is hidden, so this is
-    /// reachable only from a stale composer and answers neutrally.
-    func submitVoiceTranscript(_ text: String) async -> Bool {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        presentFeatureUnavailable()
-        return false
-    }
-
     /// The only wording an unavailable AI feature ever gets: no plans,
     /// subscriptions or "coming soon" (see DESIGN_SYSTEM.md §7).
     func presentFeatureUnavailable() {

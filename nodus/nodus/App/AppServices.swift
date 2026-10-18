@@ -5,6 +5,9 @@ import SwiftData
 /// they need from here; nothing in it is a view model.
 @MainActor
 final class AppServices {
+    /// The app and its in-process intents (Siri) share one set of services.
+    static let shared = AppServices()
+
     let configuration: APIConfiguration
     let secureStore: SecureStore
     let modelContainer: ModelContainer
@@ -14,6 +17,7 @@ final class AppServices {
     let appConfig: AppConfigStore
     let account: AccountService
     let sync: SyncCoordinator
+    let aiDrafts: AIDraftsCoordinator
 
     init(
         configuration: APIConfiguration = .live,
@@ -59,6 +63,14 @@ final class AppServices {
             session: session,
             cursor: { await engine.currentCursor() },
             onSignal: { Task { @MainActor in relay.syncSignal?() } }
+        ))
+
+        aiDrafts = AIDraftsCoordinator(service: AIDraftsService(
+            context: self.modelContainer.mainContext,
+            api: api,
+            aiAccessStore: aiAccessStore,
+            account: account,
+            didEnqueue: { [sync] in sync.localChangeQueued() }
         ))
 
         relay.profile = { [account] in account.apply($0) }

@@ -14,7 +14,7 @@ struct SyncEngineTests {
     init() throws {
         let schema = Schema([
             ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self,
-            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self,
+            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self, AIDraftJob.self,
         ])
         container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         store = InMemorySecureStore(session: Fixtures.session(access: "a", refresh: "r", expiresAt: clock.now.addingTimeInterval(3600)))

@@ -23,6 +23,8 @@ nonisolated final class OutboxOperation {
         case retie
         case setTimezone
         case setAIConsent
+        case confirmAIDrafts
+        case cancelAIDrafts
     }
 
     @Attribute(.unique) var id: UUID

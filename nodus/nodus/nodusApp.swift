@@ -29,7 +29,7 @@ final class NodusAppDelegate: NSObject, UIApplicationDelegate {
 @main
 struct nodusApp: App {
     @UIApplicationDelegateAdaptor(NodusAppDelegate.self) private var appDelegate
-    private let services = AppServices()
+    private let services = AppServices.shared
 
     init() {
         FontRegistrar.registerCustomFontsIfNeeded()

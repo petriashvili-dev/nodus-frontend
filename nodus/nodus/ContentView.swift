@@ -47,6 +47,8 @@ struct ContentView: View {
                         viewModel: viewModel,
                         settingsStore: settingsStore,
                         aiAccessStore: services.aiAccessStore,
+                        aiDrafts: services.aiDrafts,
+                        privacyPolicyURL: appConfig.config.privacyPolicyURL,
                         visible: homeVisible,
                         openVoiceComposerFromControl: $openVoiceComposerFromControl
                     )
@@ -162,9 +164,11 @@ struct ContentView: View {
         localizer.update(language: settingsStore.appLanguage)
 
         // Sync writes through its own context; screens re-read afterwards.
-        services.sync.onDataChanged = { [weak createdViewModel] in
+        services.sync.onDataChanged = { [weak createdViewModel, aiDrafts = services.aiDrafts] in
             createdViewModel?.load(rescheduleNotifications: true)
+            aiDrafts.dataChanged()
         }
+        services.aiDrafts.toast = { [weak createdViewModel] in createdViewModel?.presentToast($0) }
         services.sync.start()
 
         notificationHandler.setActionHandler { action, nodeId, occurrenceDate in

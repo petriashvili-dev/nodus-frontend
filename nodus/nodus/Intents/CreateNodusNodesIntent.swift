@@ -5,9 +5,9 @@ import Foundation
 /// The system performs speech-to-text; this intent only receives the text.
 ///
 /// Turning text into knots is an AI feature (`ai_drafts`) and goes only
-/// through the backend AI drafts flow. App Shortcuts cannot be hidden per
-/// user, so the shortcut stays installed and answers neutrally when the
-/// feature is not available.
+/// through the backend AI drafts flow; the drafts are reviewed in the app.
+/// App Shortcuts cannot be hidden per user, so the shortcut stays installed
+/// and answers neutrally when the feature is not available.
 struct CreateNodusNodesIntent: AppIntent {
     static var title: LocalizedStringResource = "Завязать узлы Nodus"
     static var description = IntentDescription("Завязывает один или несколько узлов Nodus из продиктованного текста.")
@@ -22,14 +22,30 @@ struct CreateNodusNodesIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         guard AIAccessStore.load().isAvailable(.drafts) else {
-            return .result(dialog: Self.unavailableDialog)
+            return .result(dialog: "Эта функция сейчас недоступна.")
         }
-        // The backend AI drafts flow is not connected yet, so even with the
-        // feature there is nowhere to send the text.
-        return .result(dialog: Self.unavailableDialog)
+        // The same flow as the voice composer: the drafts come back to the
+        // review screen in the app; nothing is created from here.
+        switch await Self.submit(text) {
+        case .accepted:
+            return .result(dialog: "Разбираю. Черновики будут ждать в Nodus.")
+        case .savedOffline:
+            return .result(dialog: "Нет связи. Запись сохранена в черновиках Nodus.")
+        case .needsConsent:
+            return .result(dialog: "Сначала разрешите AI-помощника в приложении Nodus.")
+        case .unavailable:
+            return .result(dialog: "Эта функция сейчас недоступна.")
+        case .quotaExceeded:
+            return .result(dialog: "Лимит AI на сегодня исчерпан.")
+        case .failed:
+            return .result(dialog: "Не получилось разобрать запись.")
+        }
     }
 
-    private static let unavailableDialog: IntentDialog = "Эта функция сейчас недоступна."
+    @MainActor
+    private static func submit(_ text: String) async -> AIDraftsService.SubmitResult {
+        await AppServices.shared.aiDrafts.service.submit(text)
+    }
 }
 
 struct NodusAppShortcuts: AppShortcutsProvider {

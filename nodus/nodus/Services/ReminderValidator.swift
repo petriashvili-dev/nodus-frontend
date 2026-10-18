@@ -1,6 +1,6 @@
 import Foundation
 
-struct ReminderDraft: Equatable {
+nonisolated struct ReminderDraft: Equatable {
     var title: String = ""
     var note: String = ""
     var scheduledAt: Date = .earliestReminderTime()

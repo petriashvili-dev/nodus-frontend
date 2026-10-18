@@ -8,3 +8,4 @@
 | [02-api-and-account.md](02-api-and-account.md) | адрес сервера, API-клиент, токены и refresh, Keychain, регистрация устройства, профиль |
 | [03-outbox-and-sync.md](03-outbox-and-sync.md) | локальный кеш, Outbox, Delta Sync, лента из `/feed`, уведомления по окну экземпляров, смена пояса, виджет |
 | [04-app-config.md](04-app-config.md) | ссылки, минимальная и последняя версия, лимиты из `GET /v1/app-config` |
+| [05-ai-drafts.md](05-ai-drafts.md) | голосовые AI-черновики: согласие, отправка, ожидание, проверка, «Черновики», Siri |

@@ -24,7 +24,7 @@ struct BackendIntegrationTests {
     private func makeDevice(store: InMemorySecureStore) throws -> Device {
         let schema = Schema([
             ReminderNode.self, ReminderOccurrenceState.self, ReminderOccurrenceOverride.self,
-            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self,
+            OutboxOperation.self, SyncMetadata.self, ServerOccurrence.self, AIDraftJob.self,
         ])
         let container = try ModelContainer(for: schema, configurations: [ModelConfiguration(isStoredInMemoryOnly: true)])
         let transport = URLSessionTransport()

@@ -280,6 +280,18 @@ actor SyncEngine: ModelActor {
                 events.profile(profile)
             }
             modelContext.delete(operation)
+        case .confirmAIDrafts:
+            let response = try APICoding.decoder.decode(ConfirmDraftsResponse.self, from: data)
+            modelContext.delete(operation)
+            try apply(response.job)
+            for node in response.created?.nodes ?? [] {
+                try apply(node, respectingOverlay: false)
+            }
+        case .cancelAIDrafts:
+            if let job = try? APICoding.decoder.decode(AIDraftJobDTO.self, from: data) {
+                try apply(job)
+            }
+            modelContext.delete(operation)
         case .deleteNode, nil:
             modelContext.delete(operation)
         }
@@ -318,6 +330,15 @@ actor SyncEngine: ModelActor {
                 modelContext.delete(operation)
             case (409, "version_conflict"):
                 try resolveConflict(operation, error: error)
+            case (_, _) where operation.kind == .confirmAIDrafts && error.code != "job_not_ready":
+                // `400` from node validation, `404` gone, `403` refused:
+                // nothing was created.
+                try rollBackConfirmation(operation)
+                operation.status = .failed
+                operation.lastErrorCode = code
+                if error.code == "feature_not_available" || error.code == "ai_consent_required" {
+                    events.accessRefused()
+                }
             case (404, _):
                 try rollBack(operation)
                 modelContext.delete(operation)
@@ -417,6 +438,19 @@ actor SyncEngine: ModelActor {
         }
     }
 
+    /// A rejected confirmation created nothing on the server: the knots shown
+    /// optimistically go away and the drafts are ready to review again.
+    private func rollBackConfirmation(_ operation: OutboxOperation) throws {
+        guard let body = operation.body,
+              let confirmation = try? APICoding.decoder.decode(ConfirmDraftsBody.self, from: body) else { return }
+        for created in confirmation.nodes {
+            if let node = try node(id: created.id) { modelContext.delete(node) }
+        }
+        if let jobId = operation.entityId, let job = try draftJob(id: jobId), job.status == .confirmed {
+            job.status = .ready
+        }
+    }
+
     // MARK: - Pull
 
     func pull() async throws {
@@ -462,6 +496,9 @@ actor SyncEngine: ModelActor {
         for dto in snapshot.nodes {
             try apply(dto, respectingOverlay: true)
         }
+        for job in snapshot.aiDraftJobs ?? [] {
+            try apply(job)
+        }
         if let user = snapshot.user {
             events.profile(user)
         }
@@ -491,6 +528,14 @@ actor SyncEngine: ModelActor {
         case ("user", "upsert"):
             if let profile = try change.data?.decode(UserProfileDTO.self) {
                 events.profile(profile)
+            }
+        case ("ai_draft_job", "upsert"):
+            if let job = try change.data?.decode(AIDraftJobDTO.self) {
+                try apply(job)
+            }
+        case ("ai_draft_job", "delete"):
+            if let id = UUID(uuidString: change.entityId), let job = try draftJob(id: id) {
+                modelContext.delete(job)
             }
         default:
             // Connections, AI jobs, suggestions, imports and types from a
@@ -661,6 +706,28 @@ actor SyncEngine: ModelActor {
         let created = SyncMetadata()
         modelContext.insert(created)
         return created
+    }
+
+    private func draftJob(id: UUID) throws -> AIDraftJob? {
+        try modelContext.fetch(FetchDescriptor<AIDraftJob>(predicate: #Predicate { $0.id == id })).first
+    }
+
+    /// A server job; a confirmation still on its way keeps the local
+    /// `confirmed` state.
+    private func apply(_ dto: AIDraftJobDTO) throws {
+        let job: AIDraftJob
+        if let existing = try draftJob(id: dto.id) {
+            job = existing
+        } else {
+            // Created on another device or from Siri before this device
+            // knew the text.
+            job = AIDraftJob(transcript: "", timeZone: TimeZone(identifier: dto.timezone ?? "") ?? .current, referenceTime: dto.referenceTime ?? dto.createdAt ?? now())
+            job.id = dto.id
+            modelContext.insert(job)
+        }
+        let isConfirming = try unfinishedEntities().contains(dto.id)
+        if isConfirming && job.status == .confirmed && dto.status == "ready" { return }
+        job.apply(dto)
     }
 
     private func node(id: UUID) throws -> ReminderNode? {

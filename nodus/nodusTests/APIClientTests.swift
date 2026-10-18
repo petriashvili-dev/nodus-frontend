@@ -93,6 +93,17 @@ struct APIClientTests {
         #expect(profile.version == 3)
     }
 
+    @Test(arguments: [
+        "2026-10-18T18:46:09+00:00",
+        "2026-10-18T18:46:09.123+00:00",
+        "2026-10-18T18:46:09.979833+00:00",
+        "2026-10-18T18:46:09.9798331Z",
+    ])
+    func parsesServerMomentsWithAnyFraction(_ raw: String) throws {
+        let date = try #require(APICoding.parseMoment(raw))
+        #expect(abs(date.timeIntervalSince1970 - 1_792_349_169) < 1)
+    }
+
     @Test func buildsURLsUnderTheVersionedBase() {
         let configuration = APIConfiguration(baseURL: Fixtures.baseURL)
         let url = configuration.url(for: "feed", query: [URLQueryItem(name: "from", value: "2026-10-17")])
