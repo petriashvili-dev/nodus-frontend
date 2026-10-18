@@ -19,10 +19,12 @@ struct ContentView: View {
     @State private var pendingDeepLink: URL?
 
     let services: AppServices
+    @ObservedObject private var appConfig: AppConfigStore
     let notificationHandler: NotificationActionHandler
 
     init(services: AppServices, notificationHandler: NotificationActionHandler = NotificationActionHandler()) {
         self.services = services
+        appConfig = services.appConfig
         self.notificationHandler = notificationHandler
     }
 
@@ -52,6 +54,12 @@ struct ContentView: View {
                 }
             }
         }
+        .overlay {
+            if appConfig.requiresUpdate {
+                UpdateRequiredView(language: settingsStore.appLanguage, appStoreURL: appConfig.config.appStoreURL)
+                    .transition(.opacity)
+            }
+        }
         .environmentObject(localizer)
         .environment(\.locale, locale)
         .task {
@@ -68,6 +76,12 @@ struct ContentView: View {
             // catch up in the background.
             Task { await services.account.refresh() }
             services.sync.enterForeground()
+            Task {
+                await appConfig.refresh()
+                if appConfig.shouldOfferUpdate() {
+                    viewModel?.presentToast(settingsStore.appLanguage.localizedString("A new version of Nodus is available"))
+                }
+            }
         }
         .onOpenURL { url in
             guard url.scheme == "nodus" else { return }

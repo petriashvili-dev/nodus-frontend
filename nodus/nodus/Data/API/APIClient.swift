@@ -19,6 +19,8 @@ nonisolated struct APIRequest<Response: Decodable & Sendable>: Sendable {
     /// operation (docs/ios/02-outbox-and-errors.md).
     var idempotencyKey: UUID?
     var requiresAuth = true
+    /// Extra headers such as `If-None-Match`.
+    var headers: [String: String] = [:]
 
     init(
         method: HTTPMethod,
@@ -26,7 +28,8 @@ nonisolated struct APIRequest<Response: Decodable & Sendable>: Sendable {
         query: [URLQueryItem] = [],
         body: Data? = nil,
         idempotencyKey: UUID? = nil,
-        requiresAuth: Bool = true
+        requiresAuth: Bool = true,
+        headers: [String: String] = [:]
     ) {
         self.method = method
         self.path = path
@@ -34,6 +37,7 @@ nonisolated struct APIRequest<Response: Decodable & Sendable>: Sendable {
         self.body = body
         self.idempotencyKey = idempotencyKey
         self.requiresAuth = requiresAuth
+        self.headers = headers
     }
 
     init<Body: Encodable>(
@@ -136,6 +140,9 @@ actor APIClient {
         }
         if let key = request.idempotencyKey {
             urlRequest.setValue(key.uuidString, forHTTPHeaderField: "Idempotency-Key")
+        }
+        for (name, value) in request.headers {
+            urlRequest.setValue(value, forHTTPHeaderField: name)
         }
         do {
             return try await transport.send(urlRequest)

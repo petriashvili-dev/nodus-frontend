@@ -11,6 +11,7 @@ final class AppServices {
     let session: AuthSession
     let api: APIClient
     let aiAccessStore: AIAccessStore
+    let appConfig: AppConfigStore
     let account: AccountService
     let sync: SyncCoordinator
 
@@ -42,6 +43,7 @@ final class AppServices {
         )
         api = APIClient(configuration: configuration, transport: transport, session: session)
         account = AccountService(api: api, session: session, store: secureStore, aiAccessStore: aiAccessStore)
+        appConfig = AppConfigStore(api: api)
         let engine = SyncEngine(
             container: self.modelContainer,
             api: api,

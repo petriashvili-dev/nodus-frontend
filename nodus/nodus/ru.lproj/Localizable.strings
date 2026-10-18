@@ -191,3 +191,7 @@
 "Remove origin date" = "Удалить исходную дату";
 
 "This feature is currently unavailable." = "Эта функция сейчас недоступна";
+"Update Nodus" = "Обновите Nodus";
+"This version is no longer supported. Update the app to keep your thread in sync." = "Эта версия больше не поддерживается. Обновите приложение, чтобы нить продолжала синхронизироваться.";
+"Update" = "Обновить";
+"A new version of Nodus is available" = "Доступна новая версия Nodus";
